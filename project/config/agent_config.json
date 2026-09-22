@@ -1,0 +1,25 @@
+{
+  "_comment": "Per-agent parameters per spec §10.1",
+  "SimilaritySearchAgent": {
+    "top_k": 5,
+    "score_threshold": 0.0
+  },
+  "GraphTraversalAgent": {
+    "max_hops": 2,
+    "max_paths": 20
+  },
+  "EntityLinkerAgent": {
+    "top_candidates": 3,
+    "min_match_confidence": 0.5
+  },
+  "DocumentRetrievalAgent": {
+    "max_doc_tokens": 1500
+  },
+  "AggregationAgent": {
+    "max_source_claims": 50
+  },
+  "EvidenceEvaluatorAgent": {
+    "entailment_model": "gemini-2.0-flash",
+    "confidence_threshold": 0.5
+  }
+}

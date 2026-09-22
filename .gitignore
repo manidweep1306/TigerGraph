@@ -1,0 +1,119 @@
+# ==============================================================================
+# TigerGraph Hackathon — Git Ignore Configuration
+# ==============================================================================
+
+# ─── Environment Variables & Credentials (CRITICAL - DO NOT COMMIT) ──────────
+.env
+.env.*
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+backend/.env
+project/.env
+project/backend/.env
+!*.env.example
+!*.env.template
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.tox/
+.nox/
+
+# ─── Node / Frontend ─────────────────────────────────────────────────────────
+node_modules/
+project/frontend/node_modules/
+.pnp
+.pnp.js
+
+# Next.js build output
+.next/
+project/frontend/.next/
+out/
+build/
+dist/
+.turbo/
+.vercel/
+
+# Logs
+logs/
+project/logs/
+project/backend/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Datasets & Large Corpus Files ───────────────────────────────────────────
+corpus-*/
+questions-*/
+*.zip
+*.tar.gz
+*.7z
+*.rar
+*.pdf
+
+# ─── IDE & System Artifacts ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Agentic / IDE Caches
+.gemini/
+.agents/

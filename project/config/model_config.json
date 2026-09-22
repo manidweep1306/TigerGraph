@@ -1,0 +1,11 @@
+{
+  "_comment": "Model config per spec §9.3. Must match exactly across RAG, GraphRAG, and Agentic pipelines.",
+  "model": "gemini-3.6-flash",
+  "temperature": 0.0,
+  "embedding_model": "gemini-embedding-001",
+  "embedding_dimension": 768,
+  "chunk_size": 512,
+  "chunk_overlap": 64,
+  "corpus_version": "20260920",
+  "eval_rubric_version": "v1.0"
+}

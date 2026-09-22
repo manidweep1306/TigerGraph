@@ -1,0 +1,291 @@
+-- =============================================================
+-- TigerGraph Schema for Agentic GraphRAG Hackathon
+-- Olympic Events Domain (Wikipedia, 1987–2023)
+-- =============================================================
+
+USE GLOBAL
+
+// ─────────────────────────────────────────────
+// VERTEX TYPES
+// ─────────────────────────────────────────────
+
+CREATE VERTEX Document (
+    PRIMARY_ID doc_id STRING,
+    title STRING,
+    url STRING,
+    wikidata_qid STRING,
+    wikipedia_pageid INT,
+    approx_tokens INT,
+    text STRING
+) WITH STATS="OUTDEGREE_BY_EDGETYPE", PRIMARY_ID_AS_ATTRIBUTE="true"
+
+CREATE VERTEX Chunk (
+    PRIMARY_ID chunk_id STRING,
+    doc_id STRING,
+    chunk_index INT,
+    text STRING,
+    approx_tokens INT
+) WITH STATS="OUTDEGREE_BY_EDGETYPE", PRIMARY_ID_AS_ATTRIBUTE="true"
+
+CREATE VERTEX Entity (
+    PRIMARY_ID entity_id STRING,
+    name STRING,
+    entity_type STRING,
+    -- ATHLETE | EVENT | COUNTRY | VENUE | GAMES | SPORT
+    normalized_name STRING,
+    aliases STRING
+    -- JSON list stored as string for compatibility
+) WITH STATS="OUTDEGREE_BY_EDGETYPE", PRIMARY_ID_AS_ATTRIBUTE="true"
+
+CREATE VERTEX OlympicGames (
+    PRIMARY_ID games_id STRING,
+    year INT,
+    season STRING,
+    -- Summer | Winter
+    host_city STRING,
+    label STRING
+    -- e.g. "2018 Winter Olympics"
+) WITH STATS="OUTDEGREE_BY_EDGETYPE", PRIMARY_ID_AS_ATTRIBUTE="true"
+
+// ─────────────────────────────────────────────
+// EDGE TYPES
+// ─────────────────────────────────────────────
+
+CREATE DIRECTED EDGE HAS_CHUNK (
+    FROM Document, TO Chunk,
+    chunk_index INT
+)
+
+CREATE DIRECTED EDGE MENTIONS_ENTITY (
+    FROM Document, TO Entity,
+    mention_count INT DEFAULT 1
+)
+
+CREATE DIRECTED EDGE CHUNK_MENTIONS_ENTITY (
+    FROM Chunk, TO Entity,
+    mention_count INT DEFAULT 1
+)
+
+CREATE DIRECTED EDGE PART_OF_GAMES (
+    FROM Document, TO OlympicGames
+)
+
+CREATE DIRECTED EDGE CHUNK_PART_OF_GAMES (
+    FROM Chunk, TO OlympicGames
+)
+
+-- Athlete → OlympicGames with medal/result info
+CREATE DIRECTED EDGE WON_MEDAL (
+    FROM Entity, TO OlympicGames,
+    medal_type STRING,
+    -- gold | silver | bronze
+    event_name STRING,
+    athlete_country STRING
+)
+
+CREATE DIRECTED EDGE COMPETED_IN (
+    FROM Entity, TO OlympicGames,
+    event_name STRING,
+    result STRING,
+    rank INT DEFAULT 0
+)
+
+-- Country → OlympicGames participation
+CREATE DIRECTED EDGE COUNTRY_IN_GAMES (
+    FROM Entity, TO OlympicGames,
+    n_athletes INT DEFAULT 0,
+    n_medals INT DEFAULT 0
+)
+
+-- Entity co-occurrence / relation
+CREATE UNDIRECTED EDGE RELATED_ENTITY (
+    FROM Entity, TO Entity,
+    relation_type STRING,
+    co_mention_count INT DEFAULT 1
+)
+
+// ─────────────────────────────────────────────
+// GRAPH
+// ─────────────────────────────────────────────
+
+CREATE GRAPH OlympicGraphRAG (
+    Document, Chunk, Entity, OlympicGames,
+    HAS_CHUNK, MENTIONS_ENTITY, CHUNK_MENTIONS_ENTITY,
+    PART_OF_GAMES, CHUNK_PART_OF_GAMES,
+    WON_MEDAL, COMPETED_IN, COUNTRY_IN_GAMES, RELATED_ENTITY
+)
+
+USE GRAPH OlympicGraphRAG
+
+// ─────────────────────────────────────────────
+// GSQL QUERIES
+// ─────────────────────────────────────────────
+
+// Query 1: Multi-hop entity traversal (for GraphTraversalAgent)
+CREATE OR REPLACE QUERY multi_hop_traversal(
+    VERTEX<Entity> start_entity,
+    INT max_hops = 2,
+    INT max_results = 20
+) FOR GRAPH OlympicGraphRAG {
+    OrAccum @visited;
+    SetAccum<VERTEX> @@result_entities;
+    SetAccum<EDGE> @@result_edges;
+
+    seed = {start_entity};
+
+    FOREACH hop IN RANGE[1, max_hops] DO
+        seed = SELECT t
+               FROM seed:s -(RELATED_ENTITY:e)- Entity:t
+               WHERE NOT t.@visited
+               ACCUM
+                   t.@visited += TRUE,
+                   @@result_entities += t,
+                   @@result_edges += e
+               POST-ACCUM
+                   s.@visited += TRUE;
+    END;
+
+    -- Also get OlympicGames connected to start entity
+    games_hop = SELECT g
+                FROM {start_entity}:s -(WON_MEDAL|COMPETED_IN|COUNTRY_IN_GAMES:e)- OlympicGames:g
+                ACCUM @@result_edges += e;
+
+    PRINT @@result_entities AS entities,
+          @@result_edges    AS edges;
+}
+
+// Query 2: Entity lookup by name (fuzzy, for EntityLinkerAgent)
+CREATE OR REPLACE QUERY entity_lookup_by_name(
+    STRING name_query,
+    INT top_k = 5
+) FOR GRAPH OlympicGraphRAG {
+    SetAccum<VERTEX<Entity>> @@candidates;
+
+    all_entities = {Entity.*};
+
+    matched = SELECT e
+              FROM all_entities:e
+              WHERE e.name == name_query
+                 OR e.normalized_name == lower(name_query)
+                 OR e.aliases LIKE "%" + name_query + "%"
+              LIMIT top_k;
+
+    PRINT matched;
+}
+
+// Query 3: Find documents by entity (for retrieval)
+CREATE OR REPLACE QUERY docs_by_entity(
+    VERTEX<Entity> entity_v,
+    INT top_k = 10
+) FOR GRAPH OlympicGraphRAG {
+    docs = SELECT d
+           FROM {entity_v}:e -(MENTIONS_ENTITY:me)- Document:d
+           ORDER BY me.mention_count DESC
+           LIMIT top_k;
+
+    PRINT docs;
+}
+
+// Query 4: Find events at specific Olympic Games
+CREATE OR REPLACE QUERY events_at_games(
+    INT year,
+    STRING season = "Summer"
+) FOR GRAPH OlympicGraphRAG {
+    target_games = SELECT g
+                   FROM OlympicGames:g
+                   WHERE g.year == year AND g.season == season;
+
+    related_docs = SELECT d
+                   FROM target_games:g -(PART_OF_GAMES:e)- Document:d;
+
+    PRINT target_games, related_docs;
+}
+
+// Query 5: Find gold medalists for a given event pattern
+CREATE OR REPLACE QUERY gold_medalists(
+    STRING event_pattern,
+    INT year = 0
+) FOR GRAPH OlympicGraphRAG {
+    SumAccum<INT> @match_count;
+
+    athletes = SELECT a
+               FROM Entity:a -(WON_MEDAL:e)- OlympicGames:g
+               WHERE e.medal_type == "gold"
+                 AND (event_pattern == "" OR e.event_name LIKE "%" + event_pattern + "%")
+                 AND (year == 0 OR g.year == year)
+               ACCUM a.@match_count += 1
+               ORDER BY a.@match_count DESC;
+
+    PRINT athletes;
+}
+
+// Query 6: Aggregation — count events matching criteria
+CREATE OR REPLACE QUERY count_events_with_competitors(
+    INT year,
+    STRING season = "Summer",
+    INT min_competitors = 0,
+    STRING sport_filter = ""
+) FOR GRAPH OlympicGraphRAG {
+    SumAccum<INT> @@count;
+
+    target_games = SELECT g FROM OlympicGames:g
+                   WHERE g.year == year AND g.season == season;
+
+    matched_docs = SELECT d
+                   FROM target_games:g -(PART_OF_GAMES:e)- Document:d
+                   WHERE (sport_filter == "" OR d.title LIKE "%" + sport_filter + "%");
+
+    PRINT @@count AS event_count, matched_docs;
+}
+
+// Query 7: Community detection prep — get entity neighbors
+CREATE OR REPLACE QUERY entity_community_context(
+    VERTEX<Entity> entity_v
+) FOR GRAPH OlympicGraphRAG {
+    neighbors = SELECT n
+                FROM {entity_v}:e -(RELATED_ENTITY:r)- Entity:n
+                ORDER BY r.co_mention_count DESC
+                LIMIT 10;
+
+    games = SELECT g
+            FROM {entity_v}:e -(WON_MEDAL|COMPETED_IN:r)- OlympicGames:g;
+
+    PRINT neighbors, games;
+}
+
+// Query 8: Get all chunks for a document
+CREATE OR REPLACE QUERY get_doc_chunks(
+    VERTEX<Document> doc_v
+) FOR GRAPH OlympicGraphRAG {
+    chunks = SELECT c
+             FROM {doc_v}:d -(HAS_CHUNK:e)- Chunk:c
+             ORDER BY e.chunk_index ASC;
+
+    PRINT chunks;
+}
+
+// Query 9: Temporal query — find previous/next Olympics
+CREATE OR REPLACE QUERY adjacent_olympics(
+    INT year,
+    STRING season = "Summer"
+) FOR GRAPH OlympicGraphRAG {
+    all_games = SELECT g FROM OlympicGames:g WHERE g.season == season
+                ORDER BY g.year ASC;
+
+    PRINT all_games;
+}
+
+// Query 10: Get graph statistics (for monitoring)
+CREATE OR REPLACE QUERY graph_stats() FOR GRAPH OlympicGraphRAG {
+    SumAccum<INT> @@doc_count, @@chunk_count, @@entity_count, @@games_count;
+
+    docs    = SELECT d FROM Document:d    ACCUM @@doc_count    += 1;
+    chunks  = SELECT c FROM Chunk:c       ACCUM @@chunk_count  += 1;
+    ents    = SELECT e FROM Entity:e      ACCUM @@entity_count += 1;
+    games   = SELECT g FROM OlympicGames:g ACCUM @@games_count += 1;
+
+    PRINT @@doc_count AS documents,
+          @@chunk_count AS chunks,
+          @@entity_count AS entities,
+          @@games_count AS olympic_games;
+}

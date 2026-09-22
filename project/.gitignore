@@ -1,0 +1,46 @@
+# ==============================================================================
+# TigerGraph Hackathon — Project Git Ignore Configuration
+# ==============================================================================
+
+# Credentials & Secrets
+.env
+.env.*
+*.env
+backend/.env
+!*.env.example
+!*.env.template
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+venv/
+.venv/
+
+# Frontend
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+.turbo/
+
+# Logs & outputs
+logs/
+*.log
+npm-debug.log*
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.gemini/
+.agents/
