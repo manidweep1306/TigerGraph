@@ -5,9 +5,9 @@ export interface PipelineResult {
   sources?: string[];
   tokens_used: number;
   latency_ms: number;
-  accuracy_score?: "PASS" | "FAIL";
+  accuracy_score?: "PASS" | "FAIL" | string;
   bertscore_f1?: number;
-  exit_type?: "ANSWER" | "PARTIAL" | "ABSTAIN";
+  exit_type?: "ANSWER" | "PARTIAL" | "ABSTAIN" | string;
   n_chunks_retrieved?: number;
   n_sources_cited?: number;
   strategy_changed?: boolean;
