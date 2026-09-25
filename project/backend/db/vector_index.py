@@ -38,7 +38,8 @@ class VectorIndex:
 
     def embed_text(self, text: str, task_type: str = "RETRIEVAL_DOCUMENT") -> list[float]:
         """Generate embedding for a single text using Gemini embedding model."""
-        result = genai.embed_content(
+        from backend.core.gemini_utils import embed_content_with_retry
+        result = embed_content_with_retry(
             model=f"models/{EMBEDDING_MODEL}",
             content=text,
             task_type=task_type,

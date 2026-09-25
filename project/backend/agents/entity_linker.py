@@ -60,12 +60,14 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
 
     try:
         # Step 1: Extract entities from query using LLM
+        from backend.core.gemini_utils import generate_content_with_retry
         model = genai.GenerativeModel(
             model_name=MODEL,
             generation_config=genai.GenerationConfig(temperature=0.0),
             system_instruction=ENTITY_LINK_PROMPT,
         )
-        response = model.generate_content(
+        response = generate_content_with_retry(
+            model,
             f"Extract entities from: {query_string}"
         )
         raw = response.text.strip()

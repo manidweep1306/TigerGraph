@@ -403,7 +403,7 @@ class Ledger:
     def _is_valid_transition(self, from_state: SlotState, to_state: SlotState) -> bool:
         """Per §4.2 — only explicitly listed transitions are valid."""
         valid = {
-            SlotState.EMPTY: {SlotState.EMPTY, SlotState.SUPPORTED, SlotState.CONTESTED},
+            SlotState.EMPTY: {SlotState.EMPTY, SlotState.SUPPORTED, SlotState.CONTESTED, SlotState.RESOLVED},
             SlotState.SUPPORTED: {SlotState.SUPPORTED, SlotState.CONTESTED, SlotState.RESOLVED},
             SlotState.CONTESTED: {SlotState.CONTESTED, SlotState.RESOLVED, SlotState.UNRESOLVABLE},
             SlotState.RESOLVED: {SlotState.RESOLVED},      # idempotent only

@@ -117,6 +117,7 @@ def run_benchmark(questions_path: str, output_path: str = "./logs/benchmark_resu
             f.write(json.dumps(record) + "\n")
 
         logger.info(f"  RAG: {rag_acc} | GraphRAG: {grag_acc} | Agentic: {ag_acc}")
+        time.sleep(1.0)
 
     logger.info(f"BENCHMARK complete. Results written to {output_path}")
     _print_summary(results)

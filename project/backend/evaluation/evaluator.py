@@ -48,12 +48,14 @@ def llm_judge(question: str, reference_answers: list[str],
     ref_str = " / ".join(reference_answers)
 
     try:
+        from backend.core.gemini_utils import generate_content_with_retry
         model = genai.GenerativeModel(
             model_name=MODEL,
             generation_config=genai.GenerationConfig(temperature=0.0),
             system_instruction=JUDGE_PROMPT,
         )
-        response = model.generate_content(
+        response = generate_content_with_retry(
+            model,
             f"Question: {question}\n\nReference answer(s): {ref_str}\n\n"
             f"Candidate answer: {candidate_answer}\n\nPASS or FAIL?"
         )

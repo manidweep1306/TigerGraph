@@ -51,13 +51,14 @@ def run(question: str, question_id: str) -> dict:
         context = "\n\n".join(context_parts)
 
         # Step 3: Generate answer
+        from backend.core.gemini_utils import generate_content_with_retry
         model = genai.GenerativeModel(
             model_name=MODEL,
             generation_config=genai.GenerationConfig(temperature=0.0),
             system_instruction=RAG_SYSTEM_PROMPT,
         )
         prompt = f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
-        response = model.generate_content(prompt)
+        response = generate_content_with_retry(model, prompt)
         answer = response.text.strip()
 
         tokens_used = max(1, len(prompt + answer) // 4)

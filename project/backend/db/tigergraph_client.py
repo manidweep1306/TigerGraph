@@ -42,7 +42,8 @@ class TigerGraphClient:
             )
             if secret:
                 token = self._conn.getToken(secret, setToken=True)
-                logger.info(f"TigerGraph token acquired, expires: {token[2]}")
+                expires = token[1] if isinstance(token, (tuple, list)) and len(token) > 1 else token
+                logger.info(f"TigerGraph token acquired, expires: {expires}")
             logger.info(f"Connected to TigerGraph at {host}, graph: {graph_name}")
         return self._conn
 

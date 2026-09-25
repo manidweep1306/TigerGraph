@@ -107,7 +107,8 @@ def compose_answer_text(exit_type: ExitType, ledger: Ledger,
         f"Compose the final answer."
     )
 
-    response = model.generate_content(user_content)
+    from backend.core.gemini_utils import generate_content_with_retry
+    response = generate_content_with_retry(model, user_content)
     return response.text.strip()
 
 
@@ -197,7 +198,9 @@ def completeness_gate(drafted_answer: str, original_question: str,
         ),
     )
 
-    response = model.generate_content(
+    from backend.core.gemini_utils import generate_content_with_retry
+    response = generate_content_with_retry(
+        model,
         f"Question: {original_question}\n\nAnswer: {drafted_answer}\n\nPASS or FAIL?"
     )
     result = response.text.strip().upper()

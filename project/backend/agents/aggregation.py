@@ -66,7 +66,8 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
             f"Perform the {aggregation_type} aggregation."
         )
 
-        response = model.generate_content(user_content)
+        from backend.core.gemini_utils import generate_content_with_retry
+        response = generate_content_with_retry(model, user_content)
         raw = response.text.strip()
         tokens_used = max(1, len(user_content + raw) // 4)
 

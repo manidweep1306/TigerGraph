@@ -57,12 +57,13 @@ def route(question: str, question_id: str, thresholds: dict) -> str:
     Returns: "RAG", "GraphRAG", or "Agentic"
     """
     try:
+        from backend.core.gemini_utils import generate_content_with_retry
         model = genai.GenerativeModel(
             model_name=MODEL,
             generation_config=genai.GenerationConfig(temperature=0.0),
             system_instruction=ROUTE_PROMPT,
         )
-        response = model.generate_content(f"Question: {question}")
+        response = generate_content_with_retry(model, f"Question: {question}")
         rung = response.text.strip()
 
         # Normalize
@@ -90,12 +91,14 @@ def assess_confidence(answer: str, question: str) -> float:
         return 0.0
 
     try:
+        from backend.core.gemini_utils import generate_content_with_retry
         model = genai.GenerativeModel(
             model_name=MODEL,
             generation_config=genai.GenerationConfig(temperature=0.0),
             system_instruction=CONFIDENCE_PROMPT,
         )
-        response = model.generate_content(
+        response = generate_content_with_retry(
+            model,
             f"Question: {question}\n\nAnswer: {answer}"
         )
         conf = float(response.text.strip())

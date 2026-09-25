@@ -90,7 +90,8 @@ def decompose_question(question: str, question_id: str,
         user_content += f"\n\nExisting evidence context (revision mode):\n{json.dumps(context, indent=2)}"
     user_content += "\n\nDecompose this question into information slots."
 
-    response = model.generate_content(user_content)
+    from backend.core.gemini_utils import generate_content_with_retry
+    response = generate_content_with_retry(model, user_content)
     raw = response.text.strip()
 
     # Parse JSON output
