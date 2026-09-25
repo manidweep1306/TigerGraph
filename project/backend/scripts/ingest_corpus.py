@@ -327,4 +327,18 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Parse only, don't write")
     args = parser.parse_args()
 
-    ingest_corpus(args.corpus, dry_run=args.dry_run, limit=args.limit)
+    corpus_path = args.corpus
+    candidates = [
+        corpus_path,
+        Path(corpus_path),
+        Path(".") / corpus_path.replace("../", ""),
+        Path("..") / corpus_path,
+        Path(__file__).parent.parent.parent.parent / corpus_path.replace("../", ""),
+        Path(__file__).parent.parent.parent / corpus_path.replace("../", ""),
+    ]
+    for c in candidates:
+        if c and Path(c).exists():
+            corpus_path = str(Path(c).resolve())
+            break
+
+    ingest_corpus(corpus_path, dry_run=args.dry_run, limit=args.limit)

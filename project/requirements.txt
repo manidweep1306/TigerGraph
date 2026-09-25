@@ -1,0 +1,31 @@
+# ==============================================================================
+# Agentic GraphRAG — TigerGraph Hackathon Requirements
+# Python 3.10+ compatible
+# ==============================================================================
+
+# Web Framework & API Server
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+requests>=2.31.0
+httpx>=0.27.0
+
+# TigerGraph Savanna Integration
+pyTigerGraph>=1.6.0
+
+# LLM & Embeddings (Google Gemini)
+google-generativeai>=0.7.0
+
+# Agentic Orchestration & Graph Engine
+langgraph>=0.2.20
+langchain-core>=0.2.20
+
+# Evaluation & Metrics
+numpy>=1.26.0
+bert-score>=0.3.13
+torch>=2.0.0
+tqdm>=4.66.0
+
+# Testing & Quality Assurance
+pytest>=8.0.0

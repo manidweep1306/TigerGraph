@@ -86,14 +86,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ─── Datasets & Large Corpus Files ───────────────────────────────────────────
-corpus-*/
-questions-*/
+# ─── Compressed Archives (Datasets are tracked directly) ─────────────────────
 *.zip
 *.tar.gz
 *.7z
 *.rar
-*.pdf
 
 # ─── IDE & System Artifacts ──────────────────────────────────────────────────
 .vscode/

@@ -187,12 +187,29 @@ async def query_adaptive(req: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _resolve_data_path(env_var: str, default_rel: str) -> str:
+    """Resolve dataset paths whether running from project/ or repo root."""
+    path_val = os.environ.get(env_var, default_rel)
+    candidates = [
+        path_val,
+        Path(path_val),
+        Path(".") / path_val.replace("../", ""),
+        Path("..") / path_val,
+        Path(__file__).parent.parent.parent / path_val.replace("../", ""),
+        Path(__file__).parent.parent / path_val.replace("../", ""),
+    ]
+    for c in candidates:
+        if c and Path(c).exists():
+            return str(Path(c).resolve())
+    return path_val
+
+
 # ─── Batch Run Endpoints ──────────────────────────────────────────────────────
 
 @app.post("/benchmark/run")
 async def run_benchmark(req: BenchmarkRequest, background_tasks: BackgroundTasks):
     """Launch the BENCHMARK mode runner (background task)."""
-    questions_path = req.questions_path or os.environ.get(
+    questions_path = req.questions_path or _resolve_data_path(
         "QUESTIONS_PUBLIC_PATH",
         "../questions-20260920T040859Z-1-001/questions/eval_public.jsonl"
     )
@@ -209,7 +226,7 @@ async def run_benchmark(req: BenchmarkRequest, background_tasks: BackgroundTasks
 @app.post("/adaptive/run")
 async def run_adaptive_batch(req: AdaptiveRequest, background_tasks: BackgroundTasks):
     """Launch the ADAPTIVE mode runner (background task)."""
-    questions_path = req.questions_path or os.environ.get(
+    questions_path = req.questions_path or _resolve_data_path(
         "QUESTIONS_HIDDEN_PATH",
         "../questions-20260920T040859Z-1-001/questions/eval_hidden.jsonl"
     )
