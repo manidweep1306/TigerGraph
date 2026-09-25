@@ -333,6 +333,10 @@ def _read_jsonl(path: str, limit: Optional[int] = None) -> list[dict]:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=os.environ.get("API_HOST", "0.0.0.0"),
-                port=int(os.environ.get("API_PORT", 8000)),
-                reload=True)
+    host = os.environ.get("API_HOST", "0.0.0.0")
+    port = int(os.environ.get("API_PORT", 8000))
+    app_target = "backend.main:app" if (Path.cwd() / "backend").exists() else "main:app"
+    try:
+        uvicorn.run(app_target, host=host, port=port, reload=True)
+    except Exception:
+        uvicorn.run(app, host=host, port=port)
