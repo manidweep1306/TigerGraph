@@ -100,22 +100,22 @@ TG_GRAPH_NAME=OlympicGraphRAG
 TG_SECRET=your_secret_token
 
 # --- Paths (Pre-configured for the bundled datasets) ---
-CORPUS_PATH=../corpus-20260920T042835Z-1-001/corpus/corpus.jsonl
-QUESTIONS_PUBLIC_PATH=../questions-20260920T040859Z-1-001/questions/eval_public.jsonl
-QUESTIONS_HIDDEN_PATH=../questions-20260920T040859Z-1-001/questions/eval_hidden.jsonl
+CORPUS_PATH=../data/corpus/corpus.jsonl
+QUESTIONS_PUBLIC_PATH=../data/questions/eval_public.jsonl
+QUESTIONS_HIDDEN_PATH=../data/questions/eval_hidden.jsonl
 ```
 
 ---
 
 ### Step 4: Local Datasets Included in the Repository
 
-All required data is **directly tracked in this repository** so you don't need to download external files:
+All required data is **directly tracked in this repository** in the `data/` folder:
 
 | Directory / File | Contents | Purpose |
 |------------------|----------|---------|
-| `corpus-20260920T042835Z-1-001/corpus/corpus.jsonl` | 2,951 English Wikipedia articles on Olympic history (~5.4M tokens) | Source-of-truth document corpus for RAG & Graph |
-| `questions-20260920T040859Z-1-001/questions/eval_public.jsonl` | 100 labeled evaluation questions with gold answers | Benchmark evaluation dataset (300 runs) |
-| `questions-20260920T040859Z-1-001/questions/eval_hidden.jsonl` | 50 unlabeled questions for adaptive routing | Adaptive Ladder evaluation dataset |
+| `data/corpus/corpus.jsonl` | 2,951 English Wikipedia articles on Olympic history (~5.4M tokens) | Source-of-truth document corpus for RAG & Graph |
+| `data/questions/eval_public.jsonl` | 100 labeled evaluation questions with gold answers | Benchmark evaluation dataset (300 runs) |
+| `data/questions/eval_hidden.jsonl` | 50 unlabeled questions for adaptive routing | Adaptive Ladder evaluation dataset |
 | `project/backend/db/schema.gsql` | TigerGraph GSQL Schema | Vertices, edges, indexes, and queries |
 
 ---
@@ -193,7 +193,7 @@ npm run dev
 - **Via Python:**
   ```python
   from backend.evaluation.benchmark_runner import run_benchmark
-  run_benchmark('../questions-20260920T040859Z-1-001/questions/eval_public.jsonl', limit=10)
+  run_benchmark('../data/questions/eval_public.jsonl', limit=10)
   ```
 
 ### 3. Run Adaptive Mode (50 Questions)

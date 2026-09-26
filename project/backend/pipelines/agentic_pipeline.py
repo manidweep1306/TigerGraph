@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 def _load_config() -> tuple[dict, dict]:
     config_dir = Path("./config")
+    if not config_dir.exists():
+        config_dir = Path(__file__).parent.parent.parent / "config"
     with open(config_dir / "frozen_thresholds.json") as f:
         thresholds = json.load(f)
     with open(config_dir / "agent_config.json") as f:
@@ -30,7 +32,7 @@ def run(question: str, question_id: str) -> dict:
              n_chunks_retrieved, n_sources_cited}
     """
     try:
-        from backend.graph import run_agentic_pipeline
+        from backend.pipelines.agentic_orchestrator import run_agentic_pipeline
         thresholds, agent_config = _load_config()
         result = run_agentic_pipeline(question, question_id, thresholds, agent_config)
         return result

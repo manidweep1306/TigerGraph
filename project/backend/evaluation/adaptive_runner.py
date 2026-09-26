@@ -27,7 +27,10 @@ def run_adaptive(questions_path: str,
     from backend.pipelines import rag_pipeline, graphrag_pipeline, agentic_pipeline
 
     # Load thresholds
-    with open("./config/frozen_thresholds.json") as f:
+    cfg_path = Path("./config/frozen_thresholds.json")
+    if not cfg_path.exists():
+        cfg_path = Path(__file__).parent.parent.parent / "config" / "frozen_thresholds.json"
+    with open(cfg_path, "r", encoding="utf-8") as f:
         thresholds = json.load(f)
 
     # Load questions

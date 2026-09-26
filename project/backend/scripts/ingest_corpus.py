@@ -321,8 +321,8 @@ def ingest_corpus(corpus_path: str, dry_run: bool = False, limit: int = None) ->
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ingest corpus into TigerGraph")
-    parser.add_argument("--corpus", default="../corpus-20260920T042835Z-1-001/corpus/corpus.jsonl")
+    default_path = os.environ.get("CORPUS_PATH", "data/corpus/corpus.jsonl")
+    parser.add_argument("--corpus", default=default_path)
     parser.add_argument("--limit", type=int, default=None, help="Limit docs for testing")
     parser.add_argument("--dry-run", action="store_true", help="Parse only, don't write")
     args = parser.parse_args()
@@ -335,6 +335,8 @@ if __name__ == "__main__":
         Path("..") / corpus_path,
         Path(__file__).parent.parent.parent.parent / corpus_path.replace("../", ""),
         Path(__file__).parent.parent.parent / corpus_path.replace("../", ""),
+        Path(__file__).parent.parent.parent.parent / "data" / "corpus" / Path(corpus_path).name,
+        Path(__file__).parent.parent.parent / "data" / "corpus" / Path(corpus_path).name,
     ]
     for c in candidates:
         if c and Path(c).exists():

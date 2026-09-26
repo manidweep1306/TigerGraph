@@ -59,11 +59,19 @@ class AdaptiveRequest(BaseModel):
 
 # ─── Health & Config ──────────────────────────────────────────────────────────
 
+def _get_config_path(name: str) -> Path:
+    p = Path(f"./config/{name}.json")
+    if p.exists():
+        return p
+    return Path(__file__).parent.parent / "config" / f"{name}.json"
+
+
 @app.get("/health")
 async def health_check():
     """Returns baseline fairness validation status."""
     try:
-        with open("./config/model_config.json") as f:
+        cfg_path = _get_config_path("model_config")
+        with open(cfg_path) as f:
             model_cfg = json.load(f)
         from backend.evaluation.evaluator import validate_baseline_fairness
         fairness_ok = validate_baseline_fairness(model_cfg, model_cfg, model_cfg)
@@ -81,7 +89,7 @@ async def get_config():
     """Return current configuration."""
     configs = {}
     for name in ["frozen_thresholds", "model_config", "agent_config"]:
-        path = Path(f"./config/{name}.json")
+        path = _get_config_path(name)
         if path.exists():
             with open(path) as f:
                 configs[name] = json.load(f)
@@ -197,6 +205,8 @@ def _resolve_data_path(env_var: str, default_rel: str) -> str:
         Path("..") / path_val,
         Path(__file__).parent.parent.parent / path_val.replace("../", ""),
         Path(__file__).parent.parent / path_val.replace("../", ""),
+        Path(__file__).parent.parent.parent / "data" / "questions" / Path(path_val).name,
+        Path(__file__).parent.parent / "data" / "questions" / Path(path_val).name,
     ]
     for c in candidates:
         if c and Path(c).exists():
@@ -211,7 +221,7 @@ async def run_benchmark(req: BenchmarkRequest, background_tasks: BackgroundTasks
     """Launch the BENCHMARK mode runner (background task)."""
     questions_path = req.questions_path or _resolve_data_path(
         "QUESTIONS_PUBLIC_PATH",
-        "../questions-20260920T040859Z-1-001/questions/eval_public.jsonl"
+        "data/questions/eval_public.jsonl"
     )
 
     def _run():
@@ -228,7 +238,7 @@ async def run_adaptive_batch(req: AdaptiveRequest, background_tasks: BackgroundT
     """Launch the ADAPTIVE mode runner (background task)."""
     questions_path = req.questions_path or _resolve_data_path(
         "QUESTIONS_HIDDEN_PATH",
-        "../questions-20260920T040859Z-1-001/questions/eval_hidden.jsonl"
+        "data/questions/eval_hidden.jsonl"
     )
 
     def _run():
