@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-agent parameters per spec §10.1",
+  "_comment": "Per-agent parameters per spec §10.1 with Groq fast model mapping (Qwen 27B)",
   "SimilaritySearchAgent": {
     "top_k": 5,
     "score_threshold": 0.0
@@ -9,6 +9,7 @@
     "max_paths": 20
   },
   "EntityLinkerAgent": {
+    "model": "qwen/qwen3.8-27b",
     "top_candidates": 3,
     "min_match_confidence": 0.5
   },
@@ -16,10 +17,12 @@
     "max_doc_tokens": 1500
   },
   "AggregationAgent": {
+    "model": "qwen/qwen3.8-27b",
     "max_source_claims": 50
   },
   "EvidenceEvaluatorAgent": {
-    "entailment_model": "gemini-2.0-flash",
+    "model": "qwen/qwen3.8-27b",
+    "entailment_model": "qwen/qwen3.8-27b",
     "confidence_threshold": 0.5
   }
 }

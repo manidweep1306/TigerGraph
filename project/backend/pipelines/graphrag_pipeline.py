@@ -2,18 +2,18 @@
 Pipeline B: GraphRAG
 Per spec §2.2 — combines TigerGraph GSQL traversal with vector search.
 Single-shot, stateless (not agentic).
+
+Per Model Mapping:
+Uses Groq llama-3.3-70b-versatile for response synthesis and Gemini embedding-001 for vector search.
 """
 
-import os
 import time
 import logging
-from dotenv import load_dotenv
-import google.generativeai as genai
 
-load_dotenv()
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
+
 logger = logging.getLogger(__name__)
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 GRAPHRAG_SYSTEM_PROMPT = """You are a factual question-answering assistant specializing in Olympic sports history.
 You have access to both structured graph data (entity relationships, medal records) and text passages.
@@ -41,7 +41,7 @@ def run(question: str, question_id: str) -> dict:
         tg = get_tg_client()
         vector_index = get_vector_index()
 
-        # Step 1: Entity linking
+        # Step 1: Entity linking (uses fast model)
         link_result = entity_linker.run(
             {"query_string": question, "graph": "tg_ref"},
             question_id, step_id=0
@@ -123,17 +123,16 @@ def run(question: str, question_id: str) -> dict:
 
         context = "\n\n".join(context_parts)
 
-        # Step 5: Generate answer
-        from backend.core.gemini_utils import generate_content_with_retry
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
-            system_instruction=GRAPHRAG_SYSTEM_PROMPT,
-        )
+        # Step 5: Generate answer using Groq llama-3.3-70b-versatile
+        groq = get_groq_client()
         prompt = f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
-        response = generate_content_with_retry(model, prompt)
-        answer = response.text.strip()
-        tokens_used += max(1, len(prompt + answer) // 4)
+        res = groq.call_complex_agent(
+            prompt=prompt,
+            system_instruction=GRAPHRAG_SYSTEM_PROMPT,
+            temperature=0.0
+        )
+        answer = res.text.strip()
+        tokens_used += res.tokens_used
 
     except Exception as e:
         logger.error(f"GraphRAG pipeline error: {e}")

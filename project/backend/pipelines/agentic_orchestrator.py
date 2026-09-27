@@ -32,10 +32,11 @@ from backend.core.synthesis import (
 )
 from backend.agents import evidence_evaluator
 
-load_dotenv()
+from backend.config.unified_config import config
+
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,6 +72,15 @@ class AgentState(TypedDict):
     # Config
     thresholds: dict
     agent_config: dict
+    rung_path: Optional[list[str]]
+
+    # Step Transition Internals
+    _selected_action: Optional[str]
+    _selected_slot_id: Optional[str]
+    _predicted_gain: Optional[float]
+    _predicted_cost: Optional[float]
+    _slot_ordinals_before: Optional[dict]
+    _trigger_revision: Optional[bool]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -427,6 +437,8 @@ def route_after_voi(state: AgentState) -> str:
 
 def route_after_coverage(state: AgentState) -> str:
     """After coverage check: loop or trigger revision or synthesize."""
+    if state.get("stop_reason"):
+        return "synthesize"
     if state.get("_trigger_revision"):
         return "decompose"  # triggers revision
     return "check_budget"  # next loop iteration
@@ -463,6 +475,7 @@ def build_agentic_graph() -> StateGraph:
     graph.add_conditional_edges("coverage_check", route_after_coverage, {
         "decompose": "decompose",
         "check_budget": "check_budget",
+        "synthesize": "synthesize",
     })
     graph.add_edge("synthesize", END)
 
@@ -503,7 +516,7 @@ def run_agentic_pipeline(question: str, question_id: str,
         "rung_path": ["Agentic"],
     }
 
-    final_state = compiled_graph.invoke(initial_state)
+    final_state = compiled_graph.invoke(initial_state, config={"recursion_limit": 100})
 
     latency_ms = int((time.time() - t_start) * 1000)
 

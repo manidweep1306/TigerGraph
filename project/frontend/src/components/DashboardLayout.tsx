@@ -84,7 +84,7 @@ export function DashboardFooter() {
           TigerGraph Savanna Hackathon · Olympic Events Benchmark · Value-of-Information (VoI) Orchestrator
         </span>
         <span className="font-mono text-[12px] font-semibold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-md border border-slate-200">
-          Next.js 14 · LangGraph · Gemini 3.6 Flash · Savanna Cloud
+          Next.js 14 · LangGraph · Groq (GPT-OSS 120B / Qwen 27B) · Gemini Embeddings · Savanna Cloud
         </span>
       </div>
     </footer>

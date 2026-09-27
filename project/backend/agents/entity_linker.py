@@ -1,6 +1,9 @@
 """
 EntityLinkerAgent — resolves query entity strings to graph node IDs.
 Per spec §3.1: invocable when any EMPTY or SUPPORTED slot references an unlinked entity.
+
+Per Model Mapping:
+Fast Intermediate Agent using Groq llama-3.1-8b-instant (~120ms response time, 14,400 RPD / 30 RPM).
 """
 
 import json
@@ -8,19 +11,15 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-import os
+from typing import Optional
 
-import google.generativeai as genai
-from dotenv import load_dotenv
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-LOG_DIR = Path("./logs")
-LOG_DIR.mkdir(exist_ok=True)
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 ENTITY_LINK_PROMPT = """You are an entity extraction and normalization expert for Olympic sports data.
 
@@ -46,7 +45,7 @@ OUTPUT FORMAT (JSON only):
 
 def run(input_data: dict, question_id: str, step_id: int) -> dict:
     """
-    EntityLinkerAgent execution.
+    EntityLinkerAgent execution using fast intermediate model (llama-3.1-8b-instant).
 
     Input per spec §3.2:
       {"query_string": str, "graph": TigerGraphInstance ref}
@@ -59,30 +58,15 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
     tokens_used = 0
 
     try:
-        # Step 1: Extract entities from query using LLM
-        from backend.core.gemini_utils import generate_content_with_retry
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
+        # Step 1: Extract entities from query using Fast LLM (llama-3.1-8b-instant)
+        groq = get_groq_client()
+        extracted, response = groq.generate_json(
+            prompt=f"Extract entities from: {query_string}",
             system_instruction=ENTITY_LINK_PROMPT,
+            use_fast_model=True
         )
-        response = generate_content_with_retry(
-            model,
-            f"Extract entities from: {query_string}"
-        )
-        raw = response.text.strip()
-        tokens_used += _estimate_tokens(query_string + raw)
-
-        # Parse
-        try:
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            extracted = json.loads(raw.strip())
-            entities = extracted.get("entities", [])
-        except Exception:
-            entities = []
+        tokens_used += response.tokens_used
+        entities = extracted.get("entities", [])
 
         if not entities:
             output = {
@@ -114,7 +98,7 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
                     entity_id = match.get("v_id", "")
                     all_candidates.append(entity_id)
 
-                    # Confidence: exact match = 1.0, partial = 0.7
+                    # Confidence: exact match = 1.0, partial = 0.75
                     stored_name = attrs.get("name", "").lower()
                     if stored_name == variant.lower():
                         conf = 1.0
@@ -138,7 +122,6 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
         logger.error(f"EntityLinkerAgent error: {e}")
         output = {"entity_id": None, "match_confidence": 0.0, "candidates": []}
 
-    latency_ms = int((time.time() - t_start) * 1000)
     output["tokens_used"] = tokens_used
     _log_invocation("EntityLinkerAgent", question_id, step_id,
                     query_string[:200], tokens_used, t_start,
@@ -146,16 +129,10 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
     return output
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: 1 token ≈ 4 chars."""
-    return max(1, len(text) // 4)
-
-
 def _log_invocation(agent_name: str, question_id: str, step_id: int,
                      input_summary: str, tokens_used: int, t_start: float,
                      output_summary: str) -> None:
     """Per spec §3.3 — mandatory invocation log."""
-    import json
     record = {
         "agent_name": agent_name,
         "question_id": question_id,

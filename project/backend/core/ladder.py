@@ -2,23 +2,22 @@
 Stage 6: Ladder — ADAPTIVE mode router.
 Per spec §6: routes a question to the cheapest rung that can answer it.
 Escalates at most once per question (RAG → GraphRAG → Agentic).
+
+Per Model Mapping:
+Uses Groq LLM (llama-3.3-70b-versatile) for accurate classification and confidence evaluation.
 """
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import google.generativeai as genai
-from dotenv import load_dotenv
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 ROUTE_PROMPT = """You are a question complexity classifier for a GraphRAG system.
 
@@ -57,14 +56,13 @@ def route(question: str, question_id: str, thresholds: dict) -> str:
     Returns: "RAG", "GraphRAG", or "Agentic"
     """
     try:
-        from backend.core.gemini_utils import generate_content_with_retry
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
+        groq = get_groq_client()
+        res = groq.call_complex_agent(
+            prompt=f"Question: {question}",
             system_instruction=ROUTE_PROMPT,
+            temperature=0.0
         )
-        response = generate_content_with_retry(model, f"Question: {question}")
-        rung = response.text.strip()
+        rung = res.text.strip()
 
         # Normalize
         if "graphrag" in rung.lower():
@@ -91,18 +89,19 @@ def assess_confidence(answer: str, question: str) -> float:
         return 0.0
 
     try:
-        from backend.core.gemini_utils import generate_content_with_retry
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
+        groq = get_groq_client()
+        res = groq.call_complex_agent(
+            prompt=f"Question: {question}\n\nAnswer: {answer}",
             system_instruction=CONFIDENCE_PROMPT,
+            temperature=0.0
         )
-        response = generate_content_with_retry(
-            model,
-            f"Question: {question}\n\nAnswer: {answer}"
-        )
-        conf = float(response.text.strip())
-        return max(0.0, min(1.0, conf))
+        text = res.text.strip()
+        import re
+        match = re.search(r"([0-9.]+)", text)
+        if match:
+            conf = float(match.group(1))
+            return max(0.0, min(1.0, conf))
+        return 0.6
 
     except Exception:
         # Heuristic fallback

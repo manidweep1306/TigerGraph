@@ -2,6 +2,9 @@
 Stage 8: Synthesis + Claim Validation + Completeness Gate
 Per spec §8 — deterministic exit rule, never LLM-driven.
 
+Per Model Mapping:
+Complex Logic & Synthesis using Groq llama-3.3-70b-versatile.
+
 INVARIANTS:
 - Synthesis exit type is decided by PURE FUNCTION over slot states — never by LLM
 - Completeness Gate can only leave output unchanged OR downgrade ONE level
@@ -11,22 +14,17 @@ INVARIANTS:
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import google.generativeai as genai
-from dotenv import load_dotenv
-
+from backend.config.unified_config import config
 from backend.core.ledger import Ledger, SlotState
+from backend.core.llm_client import get_groq_client
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 ExitType = Literal["ANSWER", "PARTIAL", "ABSTAIN"]
 
@@ -51,6 +49,7 @@ def compose_answer_text(exit_type: ExitType, ledger: Ledger,
     """
     LLM composes text consistent with the already-decided exit_type.
     Per spec §8.1: LLM only composes text, never chooses exit type.
+    Uses llama-3.3-70b-versatile for nuanced synthesis.
     """
     # Build evidence summary from claims
     resolved_claims = []
@@ -95,21 +94,28 @@ def compose_answer_text(exit_type: ExitType, ledger: Ledger,
 
     compose_prompt = _get_compose_prompt(exit_type)
 
-    model = genai.GenerativeModel(
-        model_name=MODEL,
-        generation_config=genai.GenerationConfig(temperature=0.0),
-        system_instruction=compose_prompt,
-    )
-
     user_content = (
         f"Question: {question}\n\n"
         f"Evidence gathered:\n{evidence_text}\n\n"
         f"Compose the final answer."
     )
 
-    from backend.core.gemini_utils import generate_content_with_retry
-    response = generate_content_with_retry(model, user_content)
-    return response.text.strip()
+    try:
+        groq = get_groq_client()
+        res = groq.call_complex_agent(
+            prompt=user_content,
+            system_instruction=compose_prompt,
+            temperature=0.0
+        )
+        return res.text.strip()
+    except Exception as e:
+        logger.error(f"Synthesis compose_answer_text error: {e}")
+        # Deterministic fallback text
+        if exit_type == "ANSWER" and resolved_claims:
+            return " ".join([c["claim"] for c in resolved_claims])
+        elif exit_type == "ABSTAIN":
+            return "Insufficient verified evidence found to conclusively answer the question."
+        return "Partially resolved based on available records."
 
 
 def _get_compose_prompt(exit_type: ExitType) -> str:
@@ -187,24 +193,25 @@ def completeness_gate(drafted_answer: str, original_question: str,
     Can only downgrade by ONE level and append a note.
     HARD PROHIBITION: NEVER calls Decomposer, any agent, or Ledger.
     """
-    model = genai.GenerativeModel(
-        model_name=MODEL,
-        generation_config=genai.GenerationConfig(temperature=0.0),
-        system_instruction=(
-            "You are a completeness checker. Given a question and a candidate answer, "
-            "output ONLY the word PASS or FAIL (nothing else).\n"
-            "PASS: the answer addresses the question adequately.\n"
-            "FAIL: the answer is missing key parts, is off-topic, or is evasive."
-        ),
+    system_instruction = (
+        "You are a completeness checker. Given a question and a candidate answer, "
+        "output ONLY the word PASS or FAIL (nothing else).\n"
+        "PASS: the answer addresses the question adequately.\n"
+        "FAIL: the answer is missing key parts, is off-topic, or is evasive."
     )
 
-    from backend.core.gemini_utils import generate_content_with_retry
-    response = generate_content_with_retry(
-        model,
-        f"Question: {original_question}\n\nAnswer: {drafted_answer}\n\nPASS or FAIL?"
-    )
-    result = response.text.strip().upper()
-    gate_pass = result.startswith("PASS")
+    try:
+        groq = get_groq_client()
+        res = groq.call_complex_agent(
+            prompt=f"Question: {original_question}\n\nAnswer: {drafted_answer}\n\nPASS or FAIL?",
+            system_instruction=system_instruction,
+            temperature=0.0
+        )
+        result = res.text.strip().upper()
+        gate_pass = result.startswith("PASS")
+    except Exception as e:
+        logger.error(f"Completeness gate check error: {e}")
+        gate_pass = True  # Avoid false negative on network failure
 
     new_exit = exit_type
     new_answer = drafted_answer

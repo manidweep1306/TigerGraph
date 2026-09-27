@@ -14,7 +14,10 @@ httpx>=0.27.0
 # TigerGraph Savanna Integration
 pyTigerGraph>=1.6.0
 
-# LLM & Embeddings (Google Gemini)
+# LLM Inference (Groq: llama-3.1-8b-instant & llama-3.3-70b-versatile)
+groq>=0.9.0
+
+# Vector Embeddings (Google Gemini: gemini-embedding-001)
 google-generativeai>=0.7.0
 
 # Agentic Orchestration & Graph Engine

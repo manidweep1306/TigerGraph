@@ -21,7 +21,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-LOG_DIR = Path("./logs")
+from backend.config.unified_config import config
+
+LOG_DIR = Path(config.paths.log_dir)
 LOG_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(
@@ -59,26 +61,19 @@ class AdaptiveRequest(BaseModel):
 
 # ─── Health & Config ──────────────────────────────────────────────────────────
 
-def _get_config_path(name: str) -> Path:
-    p = Path(f"./config/{name}.json")
-    if p.exists():
-        return p
-    return Path(__file__).parent.parent / "config" / f"{name}.json"
-
-
 @app.get("/health")
 async def health_check():
     """Returns baseline fairness validation status."""
     try:
-        cfg_path = _get_config_path("model_config")
-        with open(cfg_path) as f:
-            model_cfg = json.load(f)
+        model_cfg = config.model_config_data
         from backend.evaluation.evaluator import validate_baseline_fairness
         fairness_ok = validate_baseline_fairness(model_cfg, model_cfg, model_cfg)
         return {
             "status": "healthy",
             "baseline_fairness": "PASS" if fairness_ok else "FAIL",
-            "model": model_cfg.get("model"),
+            "model": model_cfg.get("model", config.groq.complex_model),
+            "fast_model": model_cfg.get("fast_model", config.groq.fast_model),
+            "embedding_model": model_cfg.get("embedding_model", config.gemini.embedding_model),
         }
     except Exception as e:
         return {"status": "degraded", "error": str(e)}
@@ -87,13 +82,11 @@ async def health_check():
 @app.get("/config")
 async def get_config():
     """Return current configuration."""
-    configs = {}
-    for name in ["frozen_thresholds", "model_config", "agent_config"]:
-        path = _get_config_path(name)
-        if path.exists():
-            with open(path) as f:
-                configs[name] = json.load(f)
-    return configs
+    return {
+        "frozen_thresholds": config.frozen_thresholds_data,
+        "model_config": config.model_config_data,
+        "agent_config": config.agent_config_data,
+    }
 
 
 # ─── Single Query Endpoints ───────────────────────────────────────────────────
@@ -156,8 +149,7 @@ async def query_adaptive(req: QueryRequest):
 
     try:
         from backend.core import ladder as ladder_module
-        with open("./config/frozen_thresholds.json") as f:
-            thresholds = json.load(f)
+        thresholds = config.frozen_thresholds_data
 
         rung = ladder_module.route(question, qid, thresholds)
         rung_path = [rung]
@@ -252,16 +244,36 @@ async def run_adaptive_batch(req: AdaptiveRequest, background_tasks: BackgroundT
 
 # ─── Results Endpoints ────────────────────────────────────────────────────────
 
+def _resolve_log_path(filename_or_path: str) -> Path:
+    """Resolve a log file path using LOG_DIR, project_root, or relative path."""
+    p = Path(filename_or_path)
+    if p.is_file():
+        return p
+    # Check in configured LOG_DIR
+    log_dir_p = LOG_DIR / p.name
+    if log_dir_p.is_file():
+        return log_dir_p
+    # Check in PROJECT_ROOT / "logs"
+    proj_log_p = Path(config.paths.project_root) / "logs" / p.name
+    if proj_log_p.is_file():
+        return proj_log_p
+    # Check in backend / logs
+    backend_log_p = Path(__file__).parent / "logs" / p.name
+    if backend_log_p.is_file():
+        return backend_log_p
+    return log_dir_p
+
+
 @app.get("/benchmark/results")
 async def get_benchmark_results(limit: Optional[int] = None):
     """Serve benchmark_results.jsonl as JSON array."""
-    return _read_jsonl("./logs/benchmark_results.jsonl", limit)
+    return _read_jsonl("benchmark_results.jsonl", limit)
 
 
 @app.get("/adaptive/results")
 async def get_adaptive_results(limit: Optional[int] = None):
     """Serve adaptive_results.jsonl as JSON array."""
-    return _read_jsonl("./logs/adaptive_results.jsonl", limit)
+    return _read_jsonl("adaptive_results.jsonl", limit)
 
 
 @app.get("/logs/{log_name}")
@@ -275,13 +287,13 @@ async def get_log(log_name: str, limit: Optional[int] = 100):
     ]
     if log_name not in valid_logs:
         raise HTTPException(status_code=404, detail=f"Unknown log: {log_name}")
-    return _read_jsonl(f"./logs/{log_name}.jsonl", limit)
+    return _read_jsonl(f"{log_name}.jsonl", limit)
 
 
 @app.get("/stats/summary")
 async def get_summary_stats():
     """Compute summary statistics from benchmark_results.jsonl."""
-    results = _read_jsonl("./logs/benchmark_results.jsonl")
+    results = _read_jsonl("benchmark_results.jsonl")
     if not results:
         return {"status": "no_results", "message": "Run /benchmark/run first"}
 
@@ -326,7 +338,7 @@ def _compute_pipeline_stats(records: list[dict]) -> dict:
 
 def _read_jsonl(path: str, limit: Optional[int] = None) -> list[dict]:
     records = []
-    p = Path(path)
+    p = _resolve_log_path(path)
     if not p.exists():
         return []
     with open(p, "r", encoding="utf-8") as f:

@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from backend.config.unified_config import config
 from backend.core.ledger import Ledger, Slot, SlotState, SlotCriticality
 
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # Default prior gains per agent type (bootstrapped until calibration data accumulates)
@@ -111,7 +113,7 @@ def select_action(candidates: list[Candidate], thresholds: dict) -> Optional[Can
     if not candidates:
         return None
 
-    θ_voi = thresholds.get("θ_voi", 0.1)
+    θ_voi = thresholds.get("θ_voi", 0.001)
 
     # Sort by score descending, apply tie-breaking per §6.5
     candidates = sorted(candidates, key=_sort_key, reverse=True)

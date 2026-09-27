@@ -24,7 +24,8 @@ CREATE VERTEX Chunk (
     doc_id STRING,
     chunk_index INT,
     text STRING,
-    approx_tokens INT
+    approx_tokens INT,
+    embedding LIST<DOUBLE>
 ) WITH STATS="OUTDEGREE_BY_EDGETYPE", PRIMARY_ID_AS_ATTRIBUTE="true"
 
 CREATE VERTEX Entity (
@@ -289,3 +290,43 @@ CREATE OR REPLACE QUERY graph_stats() FOR GRAPH OlympicGraphRAG {
           @@entity_count AS entities,
           @@games_count AS olympic_games;
 }
+
+// Query 11: Vector Search over Chunk embeddings (for VectorIndex)
+CREATE OR REPLACE QUERY vector_search_chunks(
+    LIST<DOUBLE> query_vector,
+    INT top_k = 5,
+    DOUBLE score_threshold = 0.0
+) FOR GRAPH OlympicGraphRAG {
+    SumAccum<DOUBLE> @score;
+    SumAccum<DOUBLE> @dot;
+    SumAccum<DOUBLE> @norm_c;
+    DOUBLE norm_q = 0.0;
+    ListAccum<DOUBLE> @@q_vec;
+
+    FOREACH q_val IN query_vector DO
+        @@q_vec += q_val;
+        norm_q = norm_q + q_val * q_val;
+    END;
+    norm_q = sqrt(norm_q);
+
+    all_chunks = {Chunk.*};
+
+    INT dim = @@q_vec.size();
+
+    scored_chunks = SELECT c
+                    FROM all_chunks:c
+                    POST-ACCUM
+                        FOREACH i IN RANGE[0, dim - 1] DO
+                            c.@dot += c.embedding.get(i) * @@q_vec.get(i),
+                            c.@norm_c += c.embedding.get(i) * c.embedding.get(i)
+                        END,
+                        IF c.@norm_c > 0.0 AND norm_q > 0.0 THEN
+                            c.@score = c.@dot / (sqrt(c.@norm_c) * norm_q)
+                        END
+                    HAVING c.@score >= score_threshold
+                    ORDER BY c.@score DESC
+                    LIMIT top_k;
+
+    PRINT scored_chunks AS chunks;
+}
+

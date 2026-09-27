@@ -8,9 +8,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+from backend.config.unified_config import config, LOG_DIR
 
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run(input_data: dict, question_id: str, step_id: int) -> dict:
@@ -50,12 +52,12 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
         logger.error(f"SimilaritySearchAgent error: {e}")
         output = {"chunks": [], "tokens_used": 0}
 
+    best_score = f"{output['chunks'][0]['score']:.3f}" if output['chunks'] else "0.000"
     _log_invocation(
         "SimilaritySearchAgent", question_id, step_id,
         f"query={query_string[:100]}, top_k={top_k}",
         output["tokens_used"], t_start,
-        f"found {len(output['chunks'])} chunks, "
-        f"best_score={output['chunks'][0]['score']:.3f if output['chunks'] else 0:.3f}",
+        f"found {len(output['chunks'])} chunks, best_score={best_score}",
     )
     return output
 

@@ -19,10 +19,11 @@ from enum import Enum
 from typing import Optional
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from backend.config.unified_config import config, LOG_DIR
 
-LOG_DIR = Path("./logs")
-LOG_DIR.mkdir(exist_ok=True)
+logger = logging.getLogger(__name__)
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

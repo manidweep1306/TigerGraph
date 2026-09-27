@@ -1,6 +1,8 @@
 {
-  "_comment": "Model config per spec §9.3. Must match exactly across RAG, GraphRAG, and Agentic pipelines.",
-  "model": "gemini-3.6-flash",
+  "_comment": "Model config per spec §9.3. Groq model mapping: Qwen for fast agents, OpenAI GPT-OSS for complex logic.",
+  "model": "openai/gpt-oss-120b",
+  "fast_model": "qwen/qwen3.8-27b",
+  "complex_model": "openai/gpt-oss-120b",
   "temperature": 0.0,
   "embedding_model": "gemini-embedding-001",
   "embedding_dimension": 768,

@@ -3,24 +3,10 @@ Pipeline C: Agentic GraphRAG (wrapper around graph.py LangGraph orchestrator)
 Per spec §2.3 — full agentic investigation pipeline.
 """
 
-import json
 import logging
-from pathlib import Path
-from dotenv import load_dotenv
+from backend.config.unified_config import config
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-
-
-def _load_config() -> tuple[dict, dict]:
-    config_dir = Path("./config")
-    if not config_dir.exists():
-        config_dir = Path(__file__).parent.parent.parent / "config"
-    with open(config_dir / "frozen_thresholds.json") as f:
-        thresholds = json.load(f)
-    with open(config_dir / "agent_config.json") as f:
-        agent_config = json.load(f)
-    return thresholds, agent_config
 
 
 def run(question: str, question_id: str) -> dict:
@@ -33,7 +19,8 @@ def run(question: str, question_id: str) -> dict:
     """
     try:
         from backend.pipelines.agentic_orchestrator import run_agentic_pipeline
-        thresholds, agent_config = _load_config()
+        thresholds = config.frozen_thresholds_data
+        agent_config = config.agent_config_data
         result = run_agentic_pipeline(question, question_id, thresholds, agent_config)
         return result
     except Exception as e:

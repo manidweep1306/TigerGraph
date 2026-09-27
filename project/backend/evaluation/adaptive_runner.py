@@ -7,16 +7,18 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional
 from dotenv import load_dotenv
+from backend.config.unified_config import config
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_adaptive(questions_path: str,
-                 output_path: str = "./logs/adaptive_results.jsonl",
+                 output_path: Optional[str] = None,
                  limit: int = None) -> list[dict]:
     """
     Run ADAPTIVE mode on the 50 hidden questions.
@@ -26,12 +28,8 @@ def run_adaptive(questions_path: str,
     from backend.core import ladder as ladder_module
     from backend.pipelines import rag_pipeline, graphrag_pipeline, agentic_pipeline
 
-    # Load thresholds
-    cfg_path = Path("./config/frozen_thresholds.json")
-    if not cfg_path.exists():
-        cfg_path = Path(__file__).parent.parent.parent / "config" / "frozen_thresholds.json"
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        thresholds = json.load(f)
+    output_path = output_path or str(LOG_DIR / "adaptive_results.jsonl")
+    thresholds = config.frozen_thresholds_data
 
     # Load questions
     questions = []

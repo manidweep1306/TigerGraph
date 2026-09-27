@@ -3,6 +3,9 @@ EvidenceEvaluatorAgent — mandatory post-processor for ALL other agents.
 Per spec §3.1: ALWAYS runs immediately after every other agent's execution.
 Never independently selected by VoI.
 
+Per Model Mapping:
+Fast Intermediate Agent using Groq llama-3.1-8b-instant (~120ms response time, 14,400 RPD / 30 RPM).
+
 Performs:
 1. Entailment check (does the text actually support the claim?)
 2. Confidence scoring
@@ -12,21 +15,17 @@ Performs:
 
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import google.generativeai as genai
-from dotenv import load_dotenv
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 EVALUATOR_PROMPT = """You are an evidence evaluator for a factual question-answering system about Olympic sports.
 
@@ -67,7 +66,7 @@ CONFIDENCE GUIDELINES:
 def run(input_data: dict, question_id: str, step_id: int,
         target_slot_id: str, existing_claims: Optional[list] = None) -> dict:
     """
-    EvidenceEvaluatorAgent execution.
+    EvidenceEvaluatorAgent execution using fast intermediate model (llama-3.1-8b-instant).
 
     Input per spec §3.2:
       {"raw_agent_output": object, "target_slot_id": str}
@@ -107,35 +106,25 @@ def run(input_data: dict, question_id: str, step_id: int,
                 for c in existing_claims[:5]
             ])
 
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
-            system_instruction=EVALUATOR_PROMPT,
-        )
-
         user_content = (
             f"Original question: {original_question}\n\n"
             f"Target slot (what we need): {slot_description}\n\n"
             f"Evidence text:\n{evidence_text[:3000]}\n"
             f"{existing_summary}\n\n"
-            f"Evaluate this evidence."
+            f"Evaluate this evidence and output JSON."
         )
 
-        from backend.core.gemini_utils import generate_content_with_retry
-        response = generate_content_with_retry(model, user_content)
-        raw = response.text.strip()
-        tokens_used = max(1, len(user_content + raw) // 4)
+        groq = get_groq_client()
+        data, response = groq.generate_json(
+            prompt=user_content,
+            system_instruction=EVALUATOR_PROMPT,
+            use_fast_model=True
+        )
+        tokens_used = response.tokens_used
 
-        # Parse output
-        try:
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            data = json.loads(raw.strip())
-        except Exception:
-            logger.warning(f"EvidenceEvaluator JSON parse failed, using fallback")
-            data = _parse_fallback(raw)
+        if not data:
+            logger.warning("EvidenceEvaluator JSON parse failed, using fallback")
+            data = _parse_fallback(response.text)
 
         # Build full output per spec §3.2
         output = {
@@ -247,8 +236,7 @@ def _fail_result(target_slot_id: str, step_id: int, reason: str) -> dict:
 
 def _parse_fallback(raw: str) -> dict:
     """Best-effort extraction when JSON parsing fails."""
-    entailment = "PASS" if "PASS" in raw else "FAIL"
-    # Try to extract confidence
+    entailment = "PASS" if "PASS" in raw.upper() else "FAIL"
     import re
     conf_match = re.search(r'"confidence"\s*:\s*([0-9.]+)', raw)
     confidence = float(conf_match.group(1)) if conf_match else (0.7 if entailment == "PASS" else 0.0)
@@ -265,8 +253,8 @@ def _parse_fallback(raw: str) -> dict:
     }
 
 
-def _log_invocation(agent_name, question_id, step_id, input_summary,
-                     tokens_used, t_start, output_summary):
+def _log_invocation(agent_name: str, question_id: str, step_id: int, input_summary: str,
+                      tokens_used: int, t_start: float, output_summary: str):
     record = {
         "agent_name": agent_name,
         "question_id": question_id,

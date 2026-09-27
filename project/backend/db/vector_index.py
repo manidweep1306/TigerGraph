@@ -1,24 +1,21 @@
 """
 TigerGraph Vector DB client — semantic search over corpus chunks.
 Uses the TigerGraph Vector DB API for embedding storage and retrieval.
+Vector Embeddings: Gemini gemini-embedding-001 (768-dim Vectors).
 """
 
-import os
-import json
 import logging
 import time
 from typing import Optional
-import google.generativeai as genai
-from dotenv import load_dotenv
+import numpy as np
 
-load_dotenv()
+from backend.config.unified_config import config
+from backend.core.llm_client import get_embedding_client
+
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
-EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
-EMBEDDING_DIM = 768
+EMBEDDING_MODEL = config.gemini.embedding_model
+EMBEDDING_DIM = config.gemini.embedding_dimension
 
 
 class VectorIndex:
@@ -32,36 +29,19 @@ class VectorIndex:
     def __init__(self, tg_client=None):
         from backend.db.tigergraph_client import get_tg_client
         self._tg = tg_client or get_tg_client()
-        self._graph_name = os.environ["TG_GRAPH_NAME"]
+        self._graph_name = config.tigergraph.graph_name
+        self._embed_client = get_embedding_client()
 
     # ─── Embedding Generation ──────────────────────────────────────────
 
     def embed_text(self, text: str, task_type: str = "RETRIEVAL_DOCUMENT") -> list[float]:
         """Generate embedding for a single text using Gemini embedding model."""
-        from backend.core.gemini_utils import embed_content_with_retry
-        result = embed_content_with_retry(
-            model=f"models/{EMBEDDING_MODEL}",
-            content=text,
-            task_type=task_type,
-            output_dimensionality=EMBEDDING_DIM,
-        )
-        return result["embedding"]
+        return self._embed_client.embed_content(text, task_type=task_type)
 
     def embed_batch(self, texts: list[str],
                     task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
         """Batch embed multiple texts with rate-limit retry."""
-        embeddings = []
-        for i, text in enumerate(texts):
-            try:
-                emb = self.embed_text(text, task_type=task_type)
-                embeddings.append(emb)
-                if (i + 1) % 20 == 0:
-                    logger.info(f"Embedded {i+1}/{len(texts)} texts")
-                    time.sleep(0.5)  # gentle rate limiting
-            except Exception as e:
-                logger.warning(f"Embedding failed for text {i}: {e}. Using zeros.")
-                embeddings.append([0.0] * EMBEDDING_DIM)
-        return embeddings
+        return self._embed_client.embed_batch(texts, task_type=task_type)
 
     # ─── Semantic Search ───────────────────────────────────────────────
 
@@ -111,8 +91,6 @@ class VectorIndex:
         Fallback: fetch all chunk embeddings and compute cosine similarity locally.
         Used when the vector search query isn't installed yet.
         """
-        import numpy as np
-
         conn = self._tg._get_conn()
         try:
             all_chunks = conn.getVertices("Chunk", limit=5000)

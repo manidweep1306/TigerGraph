@@ -2,24 +2,21 @@
 Stage 2: Decomposer — converts a question into a slot set.
 Per spec §3.4 and §4.6: a single LLM call, not an iterative agent.
 Outputs slots with CENTRAL/PERIPHERAL labels + requires_aggregation flag.
+
+Per Model Mapping:
+Complex Logic using Groq llama-3.3-70b-versatile (deep reasoning & strict JSON adherence, 1,000 RPD / 30 RPM).
 """
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import Optional
 
-import google.generativeai as genai
-from dotenv import load_dotenv
+from backend.config.unified_config import config
+from backend.core.ledger import Slot, SlotCriticality
+from backend.core.llm_client import get_groq_client
 
-from backend.core.ledger import Slot, SlotCriticality, SlotState
-
-load_dotenv()
 logger = logging.getLogger(__name__)
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 DECOMPOSE_SYSTEM_PROMPT = """You are an expert evidence-planning system for a GraphRAG investigation engine.
 
@@ -67,7 +64,7 @@ class DecompositionResult:
 def decompose_question(question: str, question_id: str,
                        context: Optional[dict] = None) -> DecompositionResult:
     """
-    Decompose a question into slots for the Ledger.
+    Decompose a question into slots for the Ledger using Groq llama-3.3-70b-versatile.
     Called once at start OR once during a decomposition revision (§5).
 
     Args:
@@ -78,41 +75,38 @@ def decompose_question(question: str, question_id: str,
     Returns:
         DecompositionResult with slots ready to load into Ledger
     """
-    model = genai.GenerativeModel(
-        model_name=MODEL,
-        generation_config=genai.GenerationConfig(temperature=0.0),
-        system_instruction=DECOMPOSE_SYSTEM_PROMPT,
-    )
-
     # Build user prompt
     user_content = f"Question: {question}"
     if context:
         user_content += f"\n\nExisting evidence context (revision mode):\n{json.dumps(context, indent=2)}"
-    user_content += "\n\nDecompose this question into information slots."
+    user_content += "\n\nDecompose this question into information slots. Output strictly valid JSON."
 
-    from backend.core.gemini_utils import generate_content_with_retry
-    response = generate_content_with_retry(model, user_content)
-    raw = response.text.strip()
-
-    # Parse JSON output
     try:
-        # Handle potential markdown code fence
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw.strip())
-    except json.JSONDecodeError as e:
-        logger.warning(f"Decomposer JSON parse error for q={question_id}: {e}. Fallback.")
+        groq = get_groq_client()
+        data, response = groq.generate_json(
+            prompt=user_content,
+            system_instruction=DECOMPOSE_SYSTEM_PROMPT,
+            use_fast_model=False  # Complex logic uses llama-3.3-70b-versatile
+        )
+        raw = response.text
+    except Exception as e:
+        logger.error(f"Groq decomposition call failed for q={question_id}: {e}")
+        raw = ""
+        data = {}
+
+    if not data or "slots" not in data:
+        logger.warning(f"Decomposer JSON parse error/empty for q={question_id}. Using fallback.")
         data = _fallback_decomposition(question)
 
     # Build Slot objects
     slots = []
     for slot_data in data.get("slots", []):
+        crit_str = str(slot_data.get("criticality", "CENTRAL")).upper()
+        crit = SlotCriticality.CENTRAL if "CENTRAL" in crit_str else SlotCriticality.PERIPHERAL
         slot = Slot(
-            slot_id=f"{question_id}_{slot_data['slot_id']}",
-            description=slot_data["description"],
-            criticality=SlotCriticality(slot_data.get("criticality", "CENTRAL")),
+            slot_id=f"{question_id}_{slot_data.get('slot_id', f's{len(slots)+1}')}",
+            description=slot_data.get("description", f"Information needed for {question}"),
+            criticality=crit,
             assumed_entity=slot_data.get("assumed_entity"),
             requires_aggregation=data.get("requires_aggregation", False),
         )

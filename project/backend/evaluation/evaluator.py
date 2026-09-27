@@ -1,22 +1,16 @@
 """
 Evaluation: LLM-as-judge + BERTScore
 Per spec §9.4 — accuracy and BERTScore F1 per question per pipeline.
+
+Per Model Mapping:
+Complex Logic & Judge using Groq llama-3.3-70b-versatile (deep reasoning & strict JSON/verdict adherence).
 """
 
-import json
 import logging
-import os
-import time
-from pathlib import Path
-from typing import Optional
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
 
-import google.generativeai as genai
-from dotenv import load_dotenv
-
-load_dotenv()
 logger = logging.getLogger(__name__)
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 JUDGE_PROMPT = """You are a strict factual accuracy judge for an Olympic sports question-answering system.
 
@@ -40,7 +34,7 @@ Output ONLY: PASS or FAIL"""
 
 def llm_judge(question: str, reference_answers: list[str],
               candidate_answer: str) -> str:
-    """LLM-as-judge accuracy assessment. Returns 'PASS' or 'FAIL'."""
+    """LLM-as-judge accuracy assessment using Groq llama-3.3-70b-versatile. Returns 'PASS' or 'FAIL'."""
     if not candidate_answer or candidate_answer in (
             "NO_EVIDENCE_RETRIEVED", "NO_ENTITY_MATCH", ""):
         return "FAIL"
@@ -48,18 +42,13 @@ def llm_judge(question: str, reference_answers: list[str],
     ref_str = " / ".join(reference_answers)
 
     try:
-        from backend.core.gemini_utils import generate_content_with_retry
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
+        groq = get_groq_client()
+        res = groq.call_complex_agent(
+            prompt=f"Question: {question}\n\nReference answer(s): {ref_str}\n\nCandidate answer: {candidate_answer}\n\nPASS or FAIL?",
             system_instruction=JUDGE_PROMPT,
+            temperature=0.0
         )
-        response = generate_content_with_retry(
-            model,
-            f"Question: {question}\n\nReference answer(s): {ref_str}\n\n"
-            f"Candidate answer: {candidate_answer}\n\nPASS or FAIL?"
-        )
-        result = response.text.strip().upper()
+        result = res.text.strip().upper()
         return "PASS" if result.startswith("PASS") else "FAIL"
     except Exception as e:
         logger.error(f"LLM judge error: {e}")

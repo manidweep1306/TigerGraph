@@ -1,24 +1,23 @@
 """
 AggregationAgent — combines ≥2 RESOLVED/SUPPORTED claims into a derived claim.
 Per spec §3.1: invocable when requires_aggregation==true AND ≥2 matching-shape slots resolved.
+
+Per Model Mapping:
+Fast Intermediate Agent using Groq llama-3.1-8b-instant.
 """
 
 import json
 import logging
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import google.generativeai as genai
-from dotenv import load_dotenv
+from backend.config.unified_config import config
+from backend.core.llm_client import get_groq_client
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 AGGREGATION_PROMPT = """You are an aggregation reasoning engine. 
 Given a list of evidence claims and an aggregation type (count/compare/rank), 
@@ -34,7 +33,7 @@ Output a JSON object:
 
 def run(input_data: dict, question_id: str, step_id: int) -> dict:
     """
-    AggregationAgent execution.
+    AggregationAgent execution using fast model (llama-3.1-8b-instant).
 
     Input per spec §3.2:
       {"source_claims": [claim_id, ...], "aggregation_type": "count|compare|rank"}
@@ -53,35 +52,23 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
         return {"derived_claim_text": "", "derived_from": source_claim_ids, "tokens_used": 0}
 
     try:
-        model = genai.GenerativeModel(
-            model_name=MODEL,
-            generation_config=genai.GenerationConfig(temperature=0.0),
-            system_instruction=AGGREGATION_PROMPT,
-        )
-
         claims_text = "\n".join([f"- {c}" for c in source_claims_text])
         user_content = (
             f"Aggregation type: {aggregation_type}\n\n"
             f"Source claims:\n{claims_text}\n\n"
-            f"Perform the {aggregation_type} aggregation."
+            f"Perform the {aggregation_type} aggregation and return JSON."
         )
 
-        from backend.core.gemini_utils import generate_content_with_retry
-        response = generate_content_with_retry(model, user_content)
-        raw = response.text.strip()
-        tokens_used = max(1, len(user_content + raw) // 4)
-
-        try:
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            data = json.loads(raw.strip())
-        except Exception:
-            data = {"derived_claim_text": raw[:500], "reasoning": "", "aggregated_value": ""}
+        groq = get_groq_client()
+        data, response = groq.generate_json(
+            prompt=user_content,
+            system_instruction=AGGREGATION_PROMPT,
+            use_fast_model=True
+        )
+        tokens_used = response.tokens_used
 
         output = {
-            "derived_claim_text": data.get("derived_claim_text", ""),
+            "derived_claim_text": data.get("derived_claim_text", response.text[:500] if not data else ""),
             "derived_from": source_claim_ids,
             "tokens_used": tokens_used,
             "reasoning": data.get("reasoning", ""),
@@ -101,8 +88,8 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
     return output
 
 
-def _log_invocation(agent_name, question_id, step_id, input_summary,
-                     tokens_used, t_start, output_summary):
+def _log_invocation(agent_name: str, question_id: str, step_id: int, input_summary: str,
+                     tokens_used: int, t_start: float, output_summary: str):
     record = {
         "agent_name": agent_name,
         "question_id": question_id,

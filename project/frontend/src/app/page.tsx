@@ -26,6 +26,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<Notification | null>(null);
 
+  const [isPolling, setIsPolling] = useState(false);
+
   const checkHealth = useCallback(async () => {
     try {
       const res = await api.health();
@@ -35,8 +37,8 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [results, summary] = await Promise.all([
         api.getBenchmarkResults(),
@@ -47,7 +49,7 @@ export default function DashboardPage() {
     } catch (e) {
       console.error("Failed to load dashboard data:", e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -56,18 +58,27 @@ export default function DashboardPage() {
     loadData();
   }, [checkHealth, loadData]);
 
+  // Periodic polling when a benchmark run is active
+  useEffect(() => {
+    if (!isPolling) return;
+    const interval = setInterval(() => {
+      loadData(true);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isPolling, loadData]);
+
   const handleTriggerBenchmark = async (limit?: number) => {
     try {
+      setIsPolling(true);
       await api.runBenchmark(limit);
       setActionMessage({
-        text: `Benchmark execution initiated in background (${limit ? `${limit} questions` : "full suite"}). Syncing...`,
+        text: `Benchmark initiated for ${limit ? `${limit} questions` : "full suite"}. Streaming and syncing results in real-time...`,
         type: "info",
       });
-      setTimeout(() => {
-        loadData();
-        setActionMessage(null);
-      }, 3000);
+      // Initial fetch
+      await loadData(true);
     } catch (err: unknown) {
+      setIsPolling(false);
       const message = err instanceof Error ? err.message : "An unexpected error occurred";
       setActionMessage({ text: `Failed to trigger benchmark: ${message}`, type: "error" });
     }

@@ -10,15 +10,17 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
+from typing import Optional
 from dotenv import load_dotenv
+from backend.config.unified_config import config
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def run_benchmark(questions_path: str, output_path: str = "./logs/benchmark_results.jsonl",
+def run_benchmark(questions_path: str, output_path: Optional[str] = None,
                   limit: int = None, model_config: dict = None) -> list[dict]:
     """
     Run BENCHMARK mode on the 100 public questions.
@@ -33,6 +35,7 @@ def run_benchmark(questions_path: str, output_path: str = "./logs/benchmark_resu
     Returns:
         List of benchmark result records
     """
+    output_path = output_path or str(LOG_DIR / "benchmark_results.jsonl")
     from backend.pipelines import rag_pipeline, graphrag_pipeline, agentic_pipeline
     from backend.evaluation.evaluator import llm_judge, bertscore_f1, validate_baseline_fairness
 

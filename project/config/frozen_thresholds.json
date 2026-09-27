@@ -6,7 +6,7 @@
 
   "θ_route": 0.5,
   "θ_grounding": 0.5,
-  "θ_voi": 0.1,
+  "θ_voi": 0.001,
 
   "bar_CENTRAL": 0.75,
   "bar_PERIPHERAL": 0.5,

@@ -321,6 +321,7 @@ def ingest_corpus(corpus_path: str, dry_run: bool = False, limit: int = None) ->
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Corpus ingestion script")
     default_path = os.environ.get("CORPUS_PATH", "data/corpus/corpus.jsonl")
     parser.add_argument("--corpus", default=default_path)
     parser.add_argument("--limit", type=int, default=None, help="Limit docs for testing")

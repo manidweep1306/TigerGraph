@@ -9,8 +9,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.config.unified_config import config, LOG_DIR
+
 logger = logging.getLogger(__name__)
-LOG_DIR = Path("./logs")
+LOG_DIR = Path(config.paths.log_dir)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run(input_data: dict, question_id: str, step_id: int) -> dict:
