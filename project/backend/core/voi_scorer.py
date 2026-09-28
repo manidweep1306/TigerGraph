@@ -28,13 +28,13 @@ PRIOR_GAINS = {
     "AggregationAgent": {"CENTRAL": 2.8, "PERIPHERAL": 1.0},
 }
 
-# Token cost estimates per agent invocation (includes mandatory EvidenceEvaluator call)
+# Token cost estimates per agent invocation (calibrated empirically from investigation telemetry, includes mandatory EvidenceEvaluator)
 TOKEN_COSTS = {
-    "EntityLinkerAgent": 350,     # LLM for extraction + evaluator
-    "GraphTraversalAgent": 150,   # GSQL only + evaluator
-    "SimilaritySearchAgent": 250, # embedding + evaluator
-    "DocumentRetrievalAgent": 400,# doc fetch + evaluator
-    "AggregationAgent": 500,      # aggregation LLM + evaluator
+    "EntityLinkerAgent": 1150,    # LLM for extraction + evaluator
+    "GraphTraversalAgent": 750,   # GSQL only + evaluator
+    "SimilaritySearchAgent": 2150, # embedding + evaluator
+    "DocumentRetrievalAgent": 1400,# doc fetch + evaluator
+    "AggregationAgent": 950,      # aggregation LLM + evaluator
 }
 
 
@@ -91,11 +91,11 @@ def generate_candidates(ledger: Ledger, step_history: list[dict],
                 "DocumentRetrievalAgent", slot, step_history, thresholds
             ))
 
-    # AggregationAgent: valid when requires_aggregation and ≥2 SUPPORTED/RESOLVED slots
+    # AggregationAgent: valid when requires_aggregation and >=1 SUPPORTED/RESOLVED slot or >=1 candidate claims
     aggregation_slots = [s for s in ledger.slots.values()
                          if s.requires_aggregation
-                         and s.state in (SlotState.SUPPORTED, SlotState.RESOLVED)]
-    if len(aggregation_slots) >= 2:
+                         and (s.state in (SlotState.SUPPORTED, SlotState.RESOLVED) or len(ledger.get_claims_for_slot(s.slot_id)) > 0)]
+    if aggregation_slots:
         # Use the highest-criticality slot as the proxy slot for scoring
         proxy_slot = max(aggregation_slots, key=lambda s: s.weight())
         candidates.append(_make_candidate(

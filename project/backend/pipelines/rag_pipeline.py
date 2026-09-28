@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 TOP_K = 5
 
 RAG_SYSTEM_PROMPT = """You are a factual question-answering assistant specializing in Olympic sports history.
-Answer the question using ONLY the provided context passages. 
-If the context does not contain sufficient information, say "NO_EVIDENCE_RETRIEVED".
+Answer the question using ONLY the provided context passages.
+If the provided context passages do not contain sufficient facts to answer the question, state:
+"INSUFFICIENT_EVIDENCE: The provided corpus passages do not contain enough specific information to answer this question."
+Do NOT say "NO_EVIDENCE_RETRIEVED" when passages have been provided.
 Be concise and specific. Cite which passages support your answer."""
 
 

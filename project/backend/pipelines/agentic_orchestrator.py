@@ -145,6 +145,7 @@ def node_check_budget(state: AgentState) -> AgentState:
     """
     thresholds = state["thresholds"]
     elapsed = time.time() - state["wall_time_start"]
+    max_wall_time = thresholds.get("MAX_WALL_TIME_SECONDS", 45)
 
     stop_reason = None
 
@@ -153,8 +154,10 @@ def node_check_budget(state: AgentState) -> AgentState:
         stop_reason = "budget_exhausted:steps"
     elif state["tokens_used"] >= thresholds.get("MAX_TOKENS_PER_INVESTIGATION", 15000):
         stop_reason = "budget_exhausted:tokens"
-    elif elapsed >= thresholds.get("MAX_WALL_TIME_SECONDS", 45):
+    elif elapsed >= max_wall_time:
         stop_reason = "budget_exhausted:time"
+    elif elapsed >= max_wall_time * 0.85 and state["step_count"] >= 2:
+        stop_reason = "budget_approaching_limit:graceful_synthesis"
     elif state["ledger"] and state["ledger"].all_central_resolved():
         stop_reason = "all_central_slots_resolved"
 

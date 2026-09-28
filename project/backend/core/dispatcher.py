@@ -18,6 +18,11 @@ _AGENT_REGISTRY = {
 }
 
 
+import json
+
+_INVOCATION_CACHE: dict[str, dict] = {}
+
+
 def invoke(action_type: str, input_data: dict,
            question_id: str, step_id: int) -> dict:
     """
@@ -32,6 +37,13 @@ def invoke(action_type: str, input_data: dict,
         raise ValueError(f"Unknown action type: {action_type}. "
                          f"Valid types: {list(_AGENT_REGISTRY.keys())}")
 
+    cache_key = f"{action_type}:{json.dumps(input_data, sort_keys=True, default=str)}"
+    if cache_key in _INVOCATION_CACHE:
+        logger.debug(f"Cache hit for {action_type} on question={question_id}, step={step_id}")
+        cached = _INVOCATION_CACHE[cache_key].copy()
+        cached["tokens_used"] = 0
+        return cached
+
     import importlib
     module = importlib.import_module(module_path)
 
@@ -39,7 +51,10 @@ def invoke(action_type: str, input_data: dict,
         raise AttributeError(f"Agent module {module_path} has no 'run' function")
 
     logger.debug(f"Dispatching {action_type} for question={question_id}, step={step_id}")
-    return module.run(input_data, question_id, step_id)
+    result = module.run(input_data, question_id, step_id)
+    if result and isinstance(result, dict) and not result.get("error"):
+        _INVOCATION_CACHE[cache_key] = result
+    return result
 
 
 def build_agent_input(action_type: str, slot, ledger,

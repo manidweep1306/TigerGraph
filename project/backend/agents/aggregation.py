@@ -46,7 +46,7 @@ def run(input_data: dict, question_id: str, step_id: int) -> dict:
     aggregation_type = input_data.get("aggregation_type", "count")
     source_claims_text = input_data.get("source_claims_text", [])
 
-    if len(source_claims_text) < 2:
+    if len(source_claims_text) < 1:
         _log_invocation("AggregationAgent", question_id, step_id,
                         str(source_claim_ids), 0, t_start, "failed: insufficient claims")
         return {"derived_claim_text": "", "derived_from": source_claim_ids, "tokens_used": 0}
