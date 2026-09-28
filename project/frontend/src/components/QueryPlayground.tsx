@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { PipelineResult } from "@/types";
 import { PIPELINE_CONFIG } from "@/lib/constants";
 import { Icons } from "./Icons";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 const CURATED_EXAMPLES = [
   {
@@ -204,8 +205,12 @@ function PipelineResultCard({ pipeline, result }: { pipeline: string; result: Pi
           </div>
         </div>
 
-        <div className="text-xs sm:text-sm text-slate-800 leading-relaxed font-sans min-h-[72px] whitespace-pre-wrap">
-          {result.answer || <span className="text-slate-400 italic">No answer synthesized</span>}
+        <div className="text-xs sm:text-sm text-slate-800 leading-relaxed font-sans min-h-[72px]">
+          {result.answer ? (
+            <MarkdownRenderer content={result.answer} />
+          ) : (
+            <span className="text-slate-400 italic">No answer synthesized</span>
+          )}
         </div>
       </div>
 

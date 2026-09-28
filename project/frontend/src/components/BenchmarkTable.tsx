@@ -3,6 +3,7 @@ import { BenchmarkRecord } from "@/types";
 import { PIPELINE_CONFIG } from "@/lib/constants";
 import { Icons } from "./Icons";
 import { LoadingSpinner } from "./Common";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 export function BenchmarkTable({
   data,
@@ -323,9 +324,13 @@ function BenchmarkRow({ row }: { row: BenchmarkRecord }) {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-700 leading-relaxed min-h-[48px] font-sans">
-                      {res?.answer || <span className="text-slate-400 italic">No output recorded</span>}
-                    </p>
+                    <div className="text-xs text-slate-700 leading-relaxed min-h-[48px] font-sans">
+                      {res?.answer ? (
+                        <MarkdownRenderer content={res.answer} />
+                      ) : (
+                        <span className="text-slate-400 italic">No output recorded</span>
+                      )}
+                    </div>
                     <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] font-mono text-slate-500">
                       <span>BERTScore: <strong className="text-slate-800">{(res?.bertscore_f1 ?? 0).toFixed(3)}</strong></span>
                       <span>Tokens: <strong className="text-slate-800">{res?.tokens_used ?? 0}</strong></span>
