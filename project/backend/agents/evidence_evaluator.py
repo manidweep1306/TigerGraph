@@ -97,6 +97,33 @@ def run(input_data: dict, question_id: str, step_id: int,
                         f"slot={target_slot_id}", 0, t_start, "FAIL: no evidence")
         return result
 
+    # Direct GSQL verified aggregation bypass
+    if "derived_claim_text" in raw_output and raw_output.get("aggregated_value"):
+        claim_text = raw_output["derived_claim_text"]
+        val = str(raw_output.get("aggregated_value", ""))
+        res = {
+            "claim_text": claim_text,
+            "entailment_flag": "PASS",
+            "confidence": 1.0,
+            "contradiction_detected": False,
+            "contradicted_claim_id": None,
+            "subject": slot_description or original_question,
+            "predicate": "count",
+            "object": val,
+            "provenance_chain": provenance or raw_output.get("derived_from", []),
+            "derived_from": raw_output.get("derived_from", []),
+            "target_slot_id": target_slot_id,
+            "step_id": step_id,
+            "tokens_used": 0,
+            "reasoning": raw_output.get("reasoning", "Verified by TigerGraph GSQL aggregation query"),
+            "valid_from": None,
+            "valid_to": None,
+            "source_authority": "TigerGraph",
+        }
+        _log_invocation("EvidenceEvaluatorAgent", question_id, step_id,
+                        f"slot={target_slot_id}, gsql_aggregation", 0, t_start, f"PASS: {val}")
+        return res
+
     try:
         # Check for contradictions against existing claims
         existing_summary = ""

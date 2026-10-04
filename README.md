@@ -13,20 +13,9 @@
 
 ## Architecture Overview
 
-```
-User Query
-    │
-    ├─► Pipeline A: RAG         → Vector Similarity Search → Single-shot Generation
-    ├─► Pipeline B: GraphRAG    → Entity Linker + TigerGraph Traversal + Vector Search → Generation
-    └─► Pipeline C: Agentic     → LangGraph Investigation State Machine
-                                    │
-                                    ├─ Decomposer → Central & Context Slot Set
-                                    ├─ [VoI Scorer → Dispatcher → Specialized Agent → Evidence Evaluator → Ledger Write] × N
-                                    ├─ Dynamic Slot Revision (if stalled)
-                                    ├─ Synthesis Engine (Strict Status: ANSWER / PARTIAL / ABSTAIN)
-                                    ├─ Claim Validation & Citation Verification
-                                    └─ Completeness Gate → Final Answer with Provenance
-```
+![Agentic GraphRAG Architecture](project/architecture.jpg)
+
+*System architecture demonstrating the dynamic routing of user queries to RAG, GraphRAG, and the Agentic multi-hop pipeline using TigerGraph and Vector cache.*
 
 ---
 

@@ -37,4 +37,5 @@ def run(question: str, question_id: str) -> dict:
             "strategy_changed": False,
             "n_chunks_retrieved": 0,
             "n_sources_cited": 0,
+            "step_count": 0,
         }

@@ -60,7 +60,7 @@ def run(question: str, question_id: str) -> dict:
         try:
             games_m = re.search(r'(\d{4}\s+(?:Summer|Winter))', question, re.I)
             sport_m = re.search(
-                r'\b(biathlon|shooting|cycling|athletics|swimming|sailing|weightlifting|rowing|judo|canoeing|boxing|archery|fencing|gymnastics|tennis|badminton|equestrian|skiing|walk|pole vault)\b',
+                r'\b(cross-country skiing|cross country skiing|alpine skiing|freestyle skiing|short track speed skating|speed skating|figure skating|biathlon|shooting|cycling|athletics|swimming|sailing|weightlifting|rowing|judo|canoeing|boxing|archery|fencing|gymnastics|tennis|badminton|equestrian|skiing|walk|pole vault)\b',
                 question, re.I
             )
             venue_m = re.search(
@@ -71,15 +71,24 @@ def run(question: str, question_id: str) -> dict:
             # Check for temporal relative games (e.g. before 2016 -> 2012 Summer)
             canon_g = entity_linker.canonicalize_olympic_games(question)
             g_str = f"{canon_g['year']} {canon_g['season']}" if canon_g else (games_m.group(1) if games_m else "")
-            s_str = sport_m.group(1).capitalize() if sport_m else ""
+            s_raw = sport_m.group(1) if sport_m else ""
+            s_str = s_raw.title() if s_raw else ""
+            if "cross-country" in s_str.lower() or "cross country" in s_str.lower():
+                s_str = "Cross-country skiing"
+            elif "alpine" in s_str.lower():
+                s_str = "Alpine skiing"
+
             if venue_m:
                 g_str = venue_m.group(1).strip()
 
             if g_str or s_str:
                 events = tg.get_events_by_criteria(games=g_str, sport=s_str, min_competitors=0)
+                if not events and s_str:
+                    # Retry with empty sport or search
+                    events = tg.get_events_by_criteria(games=g_str, sport="", min_competitors=0)
                 if events:
                     lines = []
-                    for ev in events[:12]:
+                    for ev in events:
                         doc_id = ev.get("doc_id")
                         if doc_id:
                             sources.append(doc_id)
@@ -90,7 +99,7 @@ def run(question: str, question_id: str) -> dict:
                         lines.append(line)
                     graph_context += "Structured Olympic Events & Records:\n" + "\n".join(lines) + "\n\n"
         except Exception as e:
-            logger.debug(f"Event criteria lookup in GraphRAG: {e}")
+            logger.error(f"Event criteria lookup in GraphRAG error: {e}")
 
         # Step 3: Graph traversal (if entity found and valid)
         if entity_id and link_result.get("match_confidence", 0) >= 0.5:
@@ -107,7 +116,7 @@ def run(question: str, question_id: str) -> dict:
                         ]
                         graph_context += f"Graph entities related to query: {', '.join(entity_names)}\n\n"
                 except Exception as e:
-                    logger.debug(f"Multi-hop traversal skipped: {e}")
+                    logger.error(f"Multi-hop traversal skipped error: {e}")
 
                 try:
                     community = tg.entity_community_context(entity_id)
@@ -118,7 +127,7 @@ def run(question: str, question_id: str) -> dict:
                         ]
                         graph_context += f"Olympic Games participated in: {', '.join(games)}\n\n"
                 except Exception as e:
-                    logger.debug(f"Community context skipped: {e}")
+                    logger.error(f"Community context skipped error: {e}")
 
                 try:
                     entity_docs = tg.docs_by_entity(entity_id, top_k=3)
@@ -126,7 +135,7 @@ def run(question: str, question_id: str) -> dict:
                         doc_ids = [d.get("v_id", "") for d in entity_docs]
                         sources.extend(doc_ids)
                 except Exception as e:
-                    logger.debug(f"Docs by entity skipped: {e}")
+                    logger.error(f"Docs by entity skipped error: {e}")
 
             # Temporal query if relative temporal keywords present
             q_lower = question.lower()
@@ -145,11 +154,11 @@ def run(question: str, question_id: str) -> dict:
                                 elif "after" in q_lower and idx < len(years) - 1:
                                     graph_context += f"Next {season} Olympics was: {years[idx+1]}\n"
                         except Exception as e:
-                            logger.debug(f"Adjacent olympics error: {e}")
+                            logger.error(f"Adjacent olympics error: {e}")
                         break
 
-        # Step 4: Vector search over chunks
-        chunks = vector_index.search(question, top_k=5)
+        # Step 4: Vector search over chunks (top_k=8 for complete event coverage)
+        chunks = vector_index.search(question, top_k=8)
         tokens_used += max(1, len(question) // 4)
 
         # Step 5: Build combined context
@@ -158,7 +167,8 @@ def run(question: str, question_id: str) -> dict:
             context_parts.append(f"[Graph Context]\n{graph_context}")
 
         for i, chunk in enumerate(chunks):
-            context_parts.append(f"[Text Passage {i+1}]\n{chunk['text']}")
+            text_snip = chunk['text'][:600].strip()
+            context_parts.append(f"[Text Passage {i+1}]\n{text_snip}")
             sources.append(chunk["chunk_id"])
 
         if not context_parts:
@@ -183,7 +193,7 @@ def run(question: str, question_id: str) -> dict:
 
     except Exception as e:
         logger.error(f"GraphRAG pipeline error: {e}")
-        answer = "Partially resolved based on available records."
+        answer = f"PIPELINE_ERROR: GraphRAG execution failed: {e}"
         sources = []
 
     return {

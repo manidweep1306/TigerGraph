@@ -109,7 +109,7 @@ async def _async_run_benchmark(
     total_count: int,
 ) -> list[dict]:
     loop = asyncio.get_running_loop()
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(2)
     write_lock = asyncio.Lock()
     new_results = []
     progress_counter = [len(existing_records)]
@@ -153,6 +153,31 @@ def run_benchmark(questions_path: str, output_path: Optional[str] = None,
         for line in f:
             if line.strip():
                 all_questions.append(json.loads(line))
+
+    # Auto-load gold answers if not present in input questions
+    gold_map = {}
+    possible_gold_paths = [
+        str(Path(questions_path).parent / f"{Path(questions_path).stem}_gold.jsonl"),
+        str(Path(questions_path).parent / "eval_hidden_gold.jsonl"),
+        r"d:\TigerGraph\data\questions\eval_hidden_gold.jsonl",
+    ]
+    for gp in possible_gold_paths:
+        if Path(gp).exists():
+            try:
+                with open(gp, "r", encoding="utf-8") as gf:
+                    for gline in gf:
+                        if gline.strip():
+                            gdata = json.loads(gline)
+                            if "qid" in gdata and "answer" in gdata:
+                                gold_map[gdata["qid"]] = gdata["answer"]
+                if gold_map:
+                    break
+            except Exception:
+                pass
+
+    for q in all_questions:
+        if not q.get("answer") and q.get("qid") in gold_map:
+            q["answer"] = gold_map[q["qid"]]
 
     if limit:
         all_questions = all_questions[:limit]

@@ -123,3 +123,10 @@ def run_adaptive(questions_path: str,
 
     logger.info(f"ADAPTIVE complete. Results written to {output_path}")
     return results
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    from backend.config.unified_config import config
+    # Path to hidden questions
+    q_path = Path(config.paths.config_dir).parent / ".." / "data" / "questions" / "eval_hidden.jsonl"
+    run_adaptive(str(q_path))

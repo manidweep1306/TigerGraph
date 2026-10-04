@@ -132,6 +132,7 @@ async def query_all_pipelines(req: QueryRequest):
                 "strategy_changed": ag_out.get("strategy_changed", False),
                 "n_chunks_retrieved": ag_out.get("n_chunks_retrieved", 0),
                 "n_sources_cited": ag_out.get("n_sources_cited", 0),
+                "step_count": ag_out.get("step_count", 0),
             }
 
     except Exception as e:
@@ -193,6 +194,7 @@ async def query_stream(req: Optional[QueryRequest] = None, question: Optional[st
                 "strategy_changed": ag_out.get("strategy_changed", False),
                 "n_chunks_retrieved": ag_out.get("n_chunks_retrieved", 0),
                 "n_sources_cited": ag_out.get("n_sources_cited", 0),
+                "step_count": ag_out.get("step_count", 0),
             }
             yield f"data: {json.dumps({'event': 'pipeline_complete', 'pipeline': 'agentic', 'result': serializable_ag})}\n\n"
             await asyncio.sleep(0.01)
@@ -403,6 +405,7 @@ def _compute_pipeline_stats(records: list[dict]) -> dict:
         "avg_tokens": sum(r.get("tokens_used", 0) for r in records) / n,
         "avg_latency_ms": sum(r.get("latency_ms", 0) for r in records) / n,
         "avg_bertscore": sum(r.get("bertscore_f1", 0) for r in records) / n,
+        "avg_reasoning_steps": sum(r.get("step_count", 0) for r in records) / n,
         "count": n,
     }
 

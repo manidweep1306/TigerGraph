@@ -218,6 +218,9 @@ function PipelineResultCard({ pipeline, result }: { pipeline: string; result: Pi
         <div className="flex items-center justify-between text-[11px] font-mono font-bold text-slate-600">
           <span>🪙 {result.tokens_used ?? 0} tokens</span>
           <span>⏱ {result.latency_ms ?? 0}ms</span>
+          {result.step_count !== undefined && result.step_count > 0 && (
+            <span>🧠 {result.step_count} steps</span>
+          )}
         </div>
 
         {Array.isArray(result.sources) && result.sources.length > 0 && (

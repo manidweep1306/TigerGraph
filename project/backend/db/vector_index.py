@@ -26,15 +26,49 @@ QUERY_EMBEDDINGS_CACHE: dict[str, list[float]] = {}  # query string -> embedding
 _CACHE_LOCK = threading.Lock()
 _DISK_CACHE_PATH = Path(config.paths.config_dir).parent / "data" / "chunk_embeddings_cache.npz"
 
+# BM25 in-memory index
+CHUNK_BM25_TOKENS: list[list[str]] = []
+CHUNK_BM25_IDF: dict[str, float] = {}
+CHUNK_BM25_AVGDL: float = 0.0
+
+
+def _clean_bm25_tokens(text: str) -> list[str]:
+    import unicodedata, re
+    text = unicodedata.normalize("NFKD", text).encode("ASCII", "ignore").decode("utf-8")
+    return [w.lower() for w in re.findall(r"\b[a-zA-Z0-9_-]+\b", text) if len(w) > 1]
+
+
+def _build_bm25_index() -> None:
+    global CHUNK_BM25_TOKENS, CHUNK_BM25_IDF, CHUNK_BM25_AVGDL
+    from collections import Counter
+    import math
+    if not CHUNK_METADATA:
+        return
+    CHUNK_BM25_TOKENS = [_clean_bm25_tokens(m["text"]) for m in CHUNK_METADATA]
+    N = len(CHUNK_BM25_TOKENS)
+    CHUNK_BM25_AVGDL = sum(len(doc) for doc in CHUNK_BM25_TOKENS) / max(1, N)
+    df = Counter()
+    for doc in CHUNK_BM25_TOKENS:
+        for term in set(doc):
+            df[term] += 1
+    CHUNK_BM25_IDF = {
+        term: math.log(1.0 + (N - freq + 0.5) / (freq + 0.5))
+        for term, freq in df.items()
+    }
+
 
 def _ensure_chunk_cache(tg_conn=None) -> None:
     """Load all chunk embeddings into RAM once (disk cache or TigerGraph)."""
     global CHUNK_EMBEDDINGS_MATRIX, CHUNK_METADATA
     if CHUNK_EMBEDDINGS_MATRIX is not None and len(CHUNK_METADATA) > 0:
+        if not CHUNK_BM25_TOKENS:
+            _build_bm25_index()
         return
 
     with _CACHE_LOCK:
         if CHUNK_EMBEDDINGS_MATRIX is not None and len(CHUNK_METADATA) > 0:
+            if not CHUNK_BM25_TOKENS:
+                _build_bm25_index()
             return
 
         # 1. Try disk cache first for instant restart (<5ms)
@@ -47,6 +81,7 @@ def _ensure_chunk_cache(tg_conn=None) -> None:
                     CHUNK_EMBEDDINGS_MATRIX = matrix
                     CHUNK_METADATA = metadata
                     logger.info(f"Loaded {len(metadata)} chunk embeddings from disk cache: {_DISK_CACHE_PATH}")
+                    _build_bm25_index()
                     return
             except Exception as e:
                 logger.warning(f"Could not load chunk cache from {_DISK_CACHE_PATH}: {e}")
@@ -75,6 +110,7 @@ def _ensure_chunk_cache(tg_conn=None) -> None:
                     CHUNK_EMBEDDINGS_MATRIX = arr / norms
                     CHUNK_METADATA = meta
                     logger.info(f"Pre-indexed {len(meta)} chunk embeddings in memory.")
+                    _build_bm25_index()
 
                     try:
                         _DISK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -144,15 +180,15 @@ class VectorIndex:
         _ensure_chunk_cache(conn)
         return len(CHUNK_METADATA) if CHUNK_METADATA else 0
 
-    # ─── Semantic Search ───────────────────────────────────────────────
+    # ─── Semantic Search (Hybrid BM25 + Dense Vectors) ─────────────────
 
     def search(self, query: str, top_k: int = 5,
-               score_threshold: float = 0.0) -> list[dict]:
+               score_threshold: float = 0.0, alpha: float = 0.6) -> list[dict]:
         """
-        In-memory vectorized semantic search (RAM < 2ms).
-        Computes normalized dot-product: CHUNK_EMBEDDINGS_MATRIX @ query_vec.
+        In-memory hybrid semantic search (BM25 + Dense Vectors < 2ms).
+        alpha is weight of BM25 lexical matching (0.6 default for exact fact retrieval).
         """
-        global CHUNK_EMBEDDINGS_MATRIX, CHUNK_METADATA
+        global CHUNK_EMBEDDINGS_MATRIX, CHUNK_METADATA, CHUNK_BM25_TOKENS, CHUNK_BM25_IDF, CHUNK_BM25_AVGDL
 
         # Ensure in-memory cache is active (only connect to TG if cache is empty)
         if CHUNK_EMBEDDINGS_MATRIX is None or len(CHUNK_METADATA) == 0:
@@ -166,28 +202,59 @@ class VectorIndex:
             conn = None
 
         if CHUNK_EMBEDDINGS_MATRIX is not None and len(CHUNK_METADATA) > 0:
-            query_embedding = self.embed_text(query, task_type="RETRIEVAL_QUERY")
-            q = np.array(query_embedding, dtype=np.float32)
-            q_norm = np.linalg.norm(q)
-            if q_norm > 0:
-                q = q / q_norm
-
-            # Pure NumPy vectorized dot-product in RAM (<2ms)
-            scores = CHUNK_EMBEDDINGS_MATRIX @ q
-            n = len(scores)
+            n = len(CHUNK_METADATA)
             if n == 0:
                 return []
 
+            # 1. BM25 Lexical Scoring
+            q_tokens = _clean_bm25_tokens(query)
+            bm25_scores = np.zeros(n, dtype=np.float32)
+            k1 = 1.5
+            b = 0.75
+            for q_term in q_tokens:
+                if q_term in CHUNK_BM25_IDF:
+                    term_idf = CHUNK_BM25_IDF[q_term]
+                    for i, doc in enumerate(CHUNK_BM25_TOKENS):
+                        if q_term in doc:
+                            tf = doc.count(q_term)
+                            dl = len(doc)
+                            numerator = tf * (k1 + 1.0)
+                            denominator = tf + k1 * (1.0 - b + b * (dl / (CHUNK_BM25_AVGDL or 1.0)))
+                            bm25_scores[i] += term_idf * (numerator / denominator)
+
+            max_bm25 = float(np.max(bm25_scores)) if len(bm25_scores) > 0 else 0.0
+            norm_bm25 = (bm25_scores / max_bm25) if max_bm25 > 0 else bm25_scores
+
+            # 2. Dense Vector Scoring
+            try:
+                query_embedding = self.embed_text(query, task_type="RETRIEVAL_QUERY")
+                q = np.array(query_embedding, dtype=np.float32)
+                q_norm = float(np.linalg.norm(q))
+                if q_norm > 0:
+                    q = q / q_norm
+                    vec_scores = CHUNK_EMBEDDINGS_MATRIX @ q
+                    norm_vec = np.clip((vec_scores + 1.0) / 2.0, 0.0, 1.0)
+                else:
+                    norm_vec = np.zeros(n, dtype=np.float32)
+                    alpha = 1.0
+            except Exception as e:
+                logger.warning(f"Dense embedding generation failed ({e}), relying on BM25.")
+                norm_vec = np.zeros(n, dtype=np.float32)
+                alpha = 1.0
+
+            # 3. Hybrid Combination
+            combined_scores = (1.0 - alpha) * norm_vec + alpha * norm_bm25
+
             k = min(top_k, n)
             if n <= top_k:
-                top_indices = np.argsort(-scores)
+                top_indices = np.argsort(-combined_scores)
             else:
-                partitioned = np.argpartition(-scores, k)[:k]
-                top_indices = partitioned[np.argsort(-scores[partitioned])]
+                partitioned = np.argpartition(-combined_scores, k)[:k]
+                top_indices = partitioned[np.argsort(-combined_scores[partitioned])]
 
             results = []
             for idx in top_indices:
-                score = float(scores[idx])
+                score = float(combined_scores[idx])
                 if score >= score_threshold:
                     meta = CHUNK_METADATA[idx]
                     results.append({

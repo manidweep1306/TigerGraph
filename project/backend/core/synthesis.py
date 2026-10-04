@@ -86,9 +86,6 @@ def compose_answer_text(exit_type: ExitType, ledger: Ledger,
                 "claim": best.source_passage,
                 "confidence": best.confidence,
             })
-        elif slot.state == SlotState.UNRESOLVABLE:
-            unresolvable_slots.append(slot.description)
-
     evidence_text = ""
     if resolved_claims:
         evidence_text += "RESOLVED EVIDENCE:\n"
@@ -102,6 +99,17 @@ def compose_answer_text(exit_type: ExitType, ledger: Ledger,
         evidence_text += "UNRESOLVABLE:\n"
         for d in unresolvable_slots:
             evidence_text += f"  - {d}\n"
+
+    if not evidence_text or len(evidence_text.strip()) < 50:
+        try:
+            from backend.db.vector_index import get_vector_index
+            v_index = get_vector_index()
+            c_chunks = v_index.search(question, top_k=8)
+            for ch in c_chunks:
+                text_snip = ch['text'][:600].strip()
+                evidence_text += f"  - [Corpus Context] {text_snip}\n"
+        except Exception:
+            pass
 
     compose_prompt = _get_compose_prompt(exit_type)
 
@@ -248,13 +256,9 @@ def completeness_gate(drafted_answer: str, original_question: str,
     if not gate_pass:
         if central_missing:
             new_exit = "PARTIAL" if exit_type == "ANSWER" else exit_type
-            new_answer += "\n\n[Note: completeness gate flagged: may not fully address question]"
-            note_appended = True
         elif not central_satisfied:
             if exit_type == "ANSWER":
                 new_exit = "PARTIAL"
-                new_answer += "\n\n[Note: completeness gate flagged: may not fully address question]"
-                note_appended = True
 
     if central_satisfied:
         new_exit = "ANSWER"

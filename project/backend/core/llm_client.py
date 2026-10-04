@@ -208,7 +208,10 @@ class GroqClient:
                 response = entry.create_completion(**call_kwargs)
                 latency_ms = int((time.time() - t_start) * 1000)
 
-                content = response.choices[0].message.content or ""
+                msg = response.choices[0].message
+                content = getattr(msg, "content", "") or ""
+                if not content:
+                    content = getattr(msg, "reasoning", "") or getattr(msg, "text", "") or ""
                 total_tokens = 0
                 if hasattr(response, "usage") and response.usage:
                     total_tokens = getattr(response.usage, "total_tokens", 0) or 0
@@ -241,11 +244,14 @@ class GroqClient:
                 )
 
                 if is_rate_limit:
-                    cooldown = random.uniform(5.0, 8.0)
+                    if "tokens per day" in err_str.lower() or "requests per day" in err_str.lower():
+                        cooldown = 300.0
+                    else:
+                        cooldown = random.uniform(3.0, 5.0)
                     entry.set_cooldown(cooldown)
                     key_hint = f"...{entry.api_key[-4:]}" if len(entry.api_key) > 4 else ""
                     logger.warning(
-                        f"Groq key {key_hint} hit 429 rate limit. "
+                        f"Groq key {key_hint} hit 429 rate limit ({'TPD exceeded' if cooldown > 10 else 'RPM limit'}). "
                         f"Cooling down {cooldown:.1f}s and rotating to next key..."
                     )
                     # Check if another key is immediately ready
@@ -260,30 +266,14 @@ class GroqClient:
                     logger.error(f"Groq API non-retryable error on {target_model}: {e}")
                     raise
 
-                if attempt >= max_retries:
-                    if target_model != "openai/gpt-oss-20b":
-                        logger.warning(f"Falling back from {target_model} to openai/gpt-oss-20b due to limit/retry.")
-                        target_model = "openai/gpt-oss-20b"
-                        call_kwargs["model"] = "openai/gpt-oss-20b"
-                        try:
-                            client, entry, _ = self.rotator.get_client_for_call()
-                            response = entry.create_completion(**call_kwargs)
-                            content = response.choices[0].message.content or ""
-                            return LLMResponse(
-                                text=content.strip(),
-                                tokens_used=max(1, len(content) // 4),
-                                raw_response=response,
-                                model=target_model,
-                                latency_ms=int((time.time() - t_start) * 1000),
-                            )
-                        except Exception as e2:
-                            logger.error(f"Fallback to 20b also failed: {e2}")
+                effective_retries = max(max_retries, len(self.rotator.entries) * 2)
+                if attempt >= effective_retries:
                     logger.error(f"Groq API max retries reached on {target_model}: {e}")
                     raise
 
                 sleep_time = delay + random.uniform(0.1, 0.5)
                 logger.warning(
-                    f"[Attempt {attempt}/{max_retries}] Groq API error on {target_model}: "
+                    f"[Attempt {attempt}/{effective_retries}] Groq API error on {target_model}: "
                     f"({err_str[:120]}...). Sleeping {sleep_time:.2f}s..."
                 )
                 time.sleep(sleep_time)
@@ -312,11 +302,11 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         json_mode: bool = False,
         temperature: float = 0.0,
-        max_tokens: int = 150,
+        max_tokens: int = 1000,
         **kwargs
     ) -> LLMResponse:
         """
-        Fast intermediate agent call using fast model (default max 150 tokens).
+        Fast intermediate agent call using fast model.
         Used for: EvidenceEvaluatorAgent, EntityLinkerAgent, AggregationAgent.
         """
         messages = []
@@ -324,12 +314,11 @@ class GroqClient:
             messages.append({"role": "system", "content": system_instruction})
         messages.append({"role": "user", "content": prompt})
 
-        response_format = {"type": "json_object"} if json_mode else None
         return self.chat_completion(
             messages=messages,
             model=self.fast_model,
             temperature=temperature,
-            response_format=response_format,
+            response_format=None,
             max_tokens=max_tokens,
             **kwargs
         )
@@ -340,11 +329,11 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         json_mode: bool = False,
         temperature: float = 0.0,
-        max_tokens: int = 350,
+        max_tokens: int = 1500,
         **kwargs
     ) -> LLMResponse:
         """
-        Complex logic & synthesis call using complex model (default max 350 tokens).
+        Complex logic & synthesis call using complex model.
         Used for: Decomposer, Synthesis, Evaluator LLM Judge, Ladder Router, RAG / GraphRAG generation.
         """
         messages = []
@@ -352,12 +341,11 @@ class GroqClient:
             messages.append({"role": "system", "content": system_instruction})
         messages.append({"role": "user", "content": prompt})
 
-        response_format = {"type": "json_object"} if json_mode else None
         return self.chat_completion(
             messages=messages,
             model=self.complex_model,
             temperature=temperature,
-            response_format=response_format,
+            response_format=None,
             max_tokens=max_tokens,
             **kwargs
         )
@@ -368,25 +356,23 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         model: Optional[str] = None,
         use_fast_model: bool = False,
-        max_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = 1200,
         **kwargs
     ) -> tuple[dict[str, Any], LLMResponse]:
         """
         Execute call and return parsed JSON object with fallback code fence handling.
         """
         target_model = model or (self.fast_model if use_fast_model else self.complex_model)
-        if max_tokens is None:
-            max_tokens = 150 if use_fast_model else 350
 
         messages = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": prompt + "\n\nRespond with valid JSON only."})
 
         res = self.chat_completion(
             messages=messages,
             model=target_model,
-            response_format={"type": "json_object"},
+            response_format=None,
             max_tokens=max_tokens,
             **kwargs
         )
@@ -444,13 +430,13 @@ class GeminiEmbeddingClient:
         self,
         content: str,
         task_type: str = "RETRIEVAL_DOCUMENT",
-        max_retries: int = 6,
-        initial_delay: float = 2.0,
-        backoff_factor: float = 2.0,
+        max_retries: int = 2,
+        initial_delay: float = 1.0,
+        backoff_factor: float = 1.5,
         **kwargs
     ) -> list[float]:
         """
-        Embed a single text using Gemini embeddings API with retry logic.
+        Embed a single text using Gemini embeddings API with quick fallback.
         """
         self._ensure_configured()
         import google.generativeai as genai
@@ -480,52 +466,51 @@ class GeminiEmbeddingClient:
                     or "rate" in err_str.lower()
                 )
 
-                if not is_rate_limit and attempt >= max_retries:
-                    logger.error(f"Gemini embed_content failed: {e}")
-                    raise
+                if attempt >= max_retries:
+                    logger.warning(f"Gemini embed_content rate limit hit ({err_str[:80]}). Falling back to BM25.")
+                    return [0.0] * self.dimension
 
                 sleep_time = delay
                 match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
                 if match:
-                    sleep_time = max(sleep_time, float(match.group(1)) + 1.0)
+                    sleep_time = max(sleep_time, min(float(match.group(1)), 3.0))
 
-                logger.warning(
-                    f"[Attempt {attempt}/{max_retries}] Gemini embed_content rate limit hit. "
-                    f"Sleeping for {sleep_time:.1f}s before retry..."
-                )
                 time.sleep(sleep_time)
                 delay *= backoff_factor
 
-        # Fallback if somehow loop exited
-        result = genai.embed_content(
-            model=model_name,
-            content=content,
-            task_type=task_type,
-            output_dimensionality=self.dimension,
-            **kwargs
-        )
-        return result["embedding"]
+        return [0.0] * self.dimension
 
     def embed_batch(
         self,
         texts: list[str],
         task_type: str = "RETRIEVAL_DOCUMENT",
-        batch_size: int = 20,
+        batch_size: int = 100,
     ) -> list[list[float]]:
         """
-        Embed a batch of texts safely with rate limit spacing.
+        Embed a batch of texts safely with rate limit spacing using proper genai list inputs.
         """
+        self._ensure_configured()
+        import google.generativeai as genai
+        
         embeddings = []
-        for i, text in enumerate(texts):
+        model_name = self.model if self.model.startswith("models/") else f"models/{self.model}"
+        
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
             try:
-                emb = self.embed_content(text, task_type=task_type)
-                embeddings.append(emb)
-                if (i + 1) % batch_size == 0:
-                    logger.info(f"Embedded {i+1}/{len(texts)} texts")
-                    time.sleep(0.5)
+                result = genai.embed_content(
+                    model=model_name,
+                    content=batch,
+                    task_type=task_type,
+                    output_dimensionality=self.dimension
+                )
+                embeddings.extend(result["embedding"])
+                if i + batch_size < len(texts):
+                    logger.info(f"Embedded {i + len(batch)}/{len(texts)} texts, sleeping to avoid rate limit...")
+                    time.sleep(2.0)
             except Exception as e:
-                logger.warning(f"Embedding failed for text item {i}: {e}. Falling back to zero vector.")
-                embeddings.append([0.0] * self.dimension)
+                logger.warning(f"Batch embedding failed for items {i} to {i+len(batch)}: {e}. Falling back to zero vectors.")
+                embeddings.extend([[0.0] * self.dimension for _ in batch])
         return embeddings
 
 

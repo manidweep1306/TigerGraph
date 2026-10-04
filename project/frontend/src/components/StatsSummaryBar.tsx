@@ -10,7 +10,7 @@ export function StatsSummaryBar({ stats }: { stats: SummaryStats }) {
       <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-5">
           {pipelines.map((p) => {
-            const s = stats[p.id as keyof SummaryStats] as { count?: number; accuracy?: number; avg_tokens?: number; avg_latency_ms?: number } | undefined;
+            const s = stats[p.id as keyof SummaryStats] as { count?: number; accuracy?: number; avg_tokens?: number; avg_latency_ms?: number; avg_reasoning_steps?: number } | undefined;
             if (!s || s.count === undefined) return null;
             const acc = ((s.accuracy ?? 0) * 100).toFixed(1);
             return (
@@ -22,6 +22,7 @@ export function StatsSummaryBar({ stats }: { stats: SummaryStats }) {
                 </span>
                 <span className="text-xs text-slate-500 font-mono">
                   {Math.round(s.avg_tokens ?? 0)} tok · {Math.round(s.avg_latency_ms ?? 0)}ms
+                  {s.avg_reasoning_steps !== undefined && s.avg_reasoning_steps > 0 && ` · ${s.avg_reasoning_steps.toFixed(1)} steps`}
                 </span>
               </div>
             );

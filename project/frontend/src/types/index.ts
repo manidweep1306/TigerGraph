@@ -13,6 +13,7 @@ export interface PipelineResult {
   strategy_changed?: boolean;
   stop_reason?: string;
   trace?: AgentTraceStep[];
+  step_count?: number;
 }
 
 export interface BenchmarkRecord {
@@ -29,6 +30,7 @@ export interface PipelineSummary {
   avg_tokens: number;
   avg_latency_ms: number;
   avg_bertscore: number;
+  avg_reasoning_steps?: number;
   count: number;
 }
 

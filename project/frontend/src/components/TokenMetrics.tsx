@@ -48,6 +48,9 @@ export function TokenMetrics({ data, stats }: { data: BenchmarkRecord[]; stats: 
                 <MetricRow label="Average Tokens" value={`${Math.round(s?.avg_tokens ?? 0)}`} unit="tok" />
                 <MetricRow label="Average Latency" value={`${Math.round(s?.avg_latency_ms ?? 0)}`} unit="ms" />
                 <MetricRow label="Accuracy Pass Rate" value={`${((s?.accuracy ?? 0) * 100).toFixed(1)}`} unit="%" />
+                {s?.avg_reasoning_steps !== undefined && s?.avg_reasoning_steps > 0 && (
+                  <MetricRow label="Avg Reasoning Steps" value={`${s?.avg_reasoning_steps.toFixed(1)}`} unit="steps" />
+                )}
                 <MetricRow label="Avg BERTScore F1" value={`${(s?.avg_bertscore ?? 0).toFixed(3)}`} unit="" />
               </div>
             </div>
