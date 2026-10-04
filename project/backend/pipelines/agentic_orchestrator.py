@@ -20,13 +20,13 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
 
-from backend.core.ledger import Ledger, Slot, SlotState
+from backend.core.ledger import Ledger, Slot, SlotState, SlotCriticality
 from backend.core.decomposer import decompose_question
 from backend.core.voi_scorer import (
     generate_candidates, select_action, log_calibration,
     compute_actual_gain
 )
-from backend.core.dispatcher import invoke as dispatch_invoke, build_agent_input
+from backend.core.dispatcher import invoke as dispatch_invoke, invoke_concurrent, build_agent_input
 from backend.core.synthesis import (
     synthesis_exit, compose_answer_text, claim_validation, completeness_gate
 )
@@ -149,8 +149,9 @@ def node_check_budget(state: AgentState) -> AgentState:
 
     stop_reason = None
 
-    # Precedence per §7.2:
-    if state["step_count"] >= thresholds.get("MAX_STEPS", 8):
+    # Precedence per §7.2: ceiling of 4 exploratory hops to prevent lingering in stalled loops
+    max_steps = min(thresholds.get("MAX_STEPS", 8), 4)
+    if state["step_count"] >= max_steps:
         stop_reason = "budget_exhausted:steps"
     elif state["tokens_used"] >= thresholds.get("MAX_TOKENS_PER_INVESTIGATION", 15000):
         stop_reason = "budget_exhausted:tokens"
@@ -174,7 +175,7 @@ def node_check_budget(state: AgentState) -> AgentState:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def node_voi_select(state: AgentState) -> AgentState:
-    """Generate candidates and select best action per VoI score."""
+    """Generate candidates and select best action(s) per VoI score."""
     ledger = state["ledger"]
     if not ledger:
         return {**state, "stop_reason": "no_candidate_actions"}
@@ -198,6 +199,27 @@ def node_voi_select(state: AgentState) -> AgentState:
                          state["step_count"], state["tokens_used"], elapsed)
         return {**state, "stop_reason": "threshold_not_cleared"}
 
+    # Speculative Dispatch: check if top 2 actions are non-conflicting
+    selected_actions = [selected]
+    if len(candidates) >= 2:
+        for second_cand in candidates:
+            if second_cand == selected:
+                continue
+            if second_cand.score < state["thresholds"].get("θ_voi", 0.001):
+                continue
+            # Non-conflicting: distinct agent types or distinct slots
+            is_non_conflicting = (
+                second_cand.agent_type != selected.agent_type
+                or second_cand.slot.slot_id != selected.slot.slot_id
+            )
+            if is_non_conflicting:
+                logger.info(
+                    f"Speculative Dispatch: pairing {selected.agent_type} (slot {selected.slot.slot_id}) "
+                    f"with non-conflicting {second_cand.agent_type} (slot {second_cand.slot.slot_id})"
+                )
+                selected_actions.append(second_cand)
+                break
+
     # Record slot ordinals BEFORE action for gain calculation
     slot_ordinals_before = {
         slot_id: slot.state.ordinal()
@@ -208,6 +230,10 @@ def node_voi_select(state: AgentState) -> AgentState:
         **state,
         "_selected_action": selected.agent_type,
         "_selected_slot_id": selected.slot.slot_id,
+        "_selected_actions": [
+            (c.agent_type, c.slot.slot_id, c.predicted_gain, c.predicted_cost)
+            for c in selected_actions
+        ],
         "_predicted_gain": selected.predicted_gain,
         "_predicted_cost": selected.predicted_cost,
         "_slot_ordinals_before": slot_ordinals_before,
@@ -219,7 +245,7 @@ def node_voi_select(state: AgentState) -> AgentState:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def node_execute_action(state: AgentState) -> AgentState:
-    """Dispatch to named agent, run EvidenceEvaluator, write to Ledger."""
+    """Dispatch to named agent(s), run EvidenceEvaluator, write to Ledger."""
     action_type = state.get("_selected_action")
     slot_id = state.get("_selected_slot_id")
     step_id = state["step_count"] + 1
@@ -228,109 +254,145 @@ def node_execute_action(state: AgentState) -> AgentState:
         return state
 
     ledger = state["ledger"]
-    slot = ledger.get_slot(slot_id)
-    if not slot:
+    if not ledger:
         return state
 
     t_action_start = time.time()
-
-    # Build agent input
-    input_data = build_agent_input(
-        action_type, slot, ledger,
-        state["question"], state["agent_config"]
-    )
-
-    # --- Step 1: Dispatch to named agent ---
-    raw_result = dispatch_invoke(action_type, input_data, state["question_id"], step_id)
-    slot.record_action_attempt(action_type)
-
-    # --- Step 2: EvidenceEvaluatorAgent (MANDATORY after EVERY agent) ---
-    existing_claims_for_slot = [
-        c.to_dict() for c in ledger.get_claims_for_slot(slot_id)
+    raw_selected_actions = state.get("_selected_actions") or [
+        (action_type, slot_id, state.get("_predicted_gain", 0), state.get("_predicted_cost", 0))
     ]
-    eval_input = {
-        "raw_agent_output": raw_result,
-        "target_slot_id": slot_id,
-        "slot_description": slot.description,
-        "original_question": state["question"],
-    }
-    evaluated_claim = evidence_evaluator.run(
-        eval_input, state["question_id"], step_id, slot_id,
-        existing_claims=existing_claims_for_slot
-    )
 
-    # --- Step 3: Ledger write ---
-    old_state = slot.state
-    claim_id, new_slot_state = ledger.write(evaluated_claim)
+    # Build inputs for all concurrent actions
+    action_inputs = []
+    actions_to_run = []
+    for act_type, s_id, p_gain, p_cost in raw_selected_actions:
+        slot = ledger.get_slot(s_id)
+        if slot:
+            inp = build_agent_input(act_type, slot, ledger, state["question"], state["agent_config"])
+            action_inputs.append((act_type, inp))
+            actions_to_run.append((act_type, s_id, p_gain, p_cost, slot))
 
-    # --- Compute actual gain for calibration ---
-    slot_ordinals_after = {
-        sid: s.state.ordinal() for sid, s in ledger.slots.items()
-    }
-    actual_gain = compute_actual_gain(
-        state.get("_slot_ordinals_before", {}),
-        slot_ordinals_after, ledger
-    )
-    actual_cost = raw_result.get("tokens_used", 0) + evaluated_claim.get("tokens_used", 0)
+    if not actions_to_run:
+        return state
 
-    # Log calibration per §6.7
-    from backend.core.voi_scorer import Candidate
-    proxy_candidate = Candidate(action_type, slot,
-                                 state.get("_predicted_gain", 0),
-                                 state.get("_predicted_cost", 0))
-    log_calibration(
-        state["question_id"], step_id, proxy_candidate,
-        actual_gain, actual_cost, int((time.time() - t_action_start) * 1000)
-    )
+    # Execute tools concurrently
+    raw_results = invoke_concurrent(action_inputs, state["question_id"], step_id)
 
-    # --- Stall detection: did we make progress? ---
-    made_progress = actual_gain > 0
+    total_tokens_spent = 0
+    total_actual_gain = 0
+    new_trace_entries = []
+    agent_dist = dict(state.get("agent_type_distribution", {}))
+
+    for (act_type, s_id, p_gain, p_cost, slot), raw_result in zip(actions_to_run, raw_results):
+        slot.record_action_attempt(act_type)
+
+        # Step 2: EvidenceEvaluatorAgent (MANDATORY after EVERY agent)
+        existing_claims_for_slot = [
+            c.to_dict() for c in ledger.get_claims_for_slot(s_id)
+        ]
+        eval_input = {
+            "raw_agent_output": raw_result,
+            "target_slot_id": s_id,
+            "slot_description": slot.description,
+            "original_question": state["question"],
+        }
+        evaluated_claim = evidence_evaluator.run(
+            eval_input, state["question_id"], step_id, s_id,
+            existing_claims=existing_claims_for_slot
+        )
+
+        # Step 3: Ledger write
+        old_state = slot.state
+        claim_id, new_slot_state = ledger.write(evaluated_claim)
+
+        # Compute gain and cost
+        slot_ordinals_after = {
+            sid: s.state.ordinal() for sid, s in ledger.slots.items()
+        }
+        actual_gain = compute_actual_gain(
+            state.get("_slot_ordinals_before", {}),
+            slot_ordinals_after, ledger
+        )
+        total_actual_gain += actual_gain
+        cost = raw_result.get("tokens_used", 0) + evaluated_claim.get("tokens_used", 0)
+        total_tokens_spent += cost
+
+        # Log calibration per §6.7
+        from backend.core.voi_scorer import Candidate
+        proxy_candidate = Candidate(act_type, slot, p_gain, p_cost)
+        log_calibration(
+            state["question_id"], step_id, proxy_candidate,
+            actual_gain, cost, int((time.time() - t_action_start) * 1000)
+        )
+
+        agent_dist[str(step_id)] = act_type
+        new_trace_entries.append({
+            "step": "action",
+            "step_id": step_id,
+            "agent_type": act_type,
+            "slot_id": s_id,
+            "slot_state_before": old_state.value,
+            "slot_state_after": new_slot_state.value,
+            "actual_gain": actual_gain,
+            "actual_cost": cost,
+            "tokens_used": cost,
+            "claim_id": claim_id,
+            "entailment": evaluated_claim.get("entailment_flag"),
+            "confidence": evaluated_claim.get("confidence", 0),
+        })
+
+    # Stall detection
+    made_progress = total_actual_gain > 0
     consecutive_no_progress = state["consecutive_no_progress_steps"]
     if not made_progress:
         consecutive_no_progress += 1
     else:
         consecutive_no_progress = 0
 
-    # Update agent type distribution (for strategy_changed calc)
-    agent_dist = state.get("agent_type_distribution", {})
-    agent_dist[str(step_id)] = action_type
-
-    # Record trace entry
-    trace_entry = {
-        "step": "action",
-        "step_id": step_id,
-        "agent_type": action_type,
-        "slot_id": slot_id,
-        "slot_state_before": old_state.value,
-        "slot_state_after": new_slot_state.value,
-        "actual_gain": actual_gain,
-        "actual_cost": actual_cost,
-        "tokens_used": actual_cost,
-        "claim_id": claim_id,
-        "entailment": evaluated_claim.get("entailment_flag"),
-        "confidence": evaluated_claim.get("confidence", 0),
-    }
-
     return {
         **state,
         "step_count": step_id,
-        "tokens_used": state["tokens_used"] + actual_cost,
+        "tokens_used": state["tokens_used"] + total_tokens_spent,
         "consecutive_no_progress_steps": consecutive_no_progress,
         "agent_type_distribution": agent_dist,
-        "investigation_trace": state["investigation_trace"] + [trace_entry],
+        "investigation_trace": state["investigation_trace"] + new_trace_entries,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Node: Coverage Check (checks stall + decomp revision)
+# Node: Coverage Check (checks early exit + stall + decomp revision)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def node_coverage_check(state: AgentState) -> AgentState:
     """
-    Check for stall (K=3 consecutive no-progress steps) and trigger
-    decomposition revision if budget allows.
-    Per spec §5.
+    Check for early exit heuristic, stall detection, and decomposition revision.
     """
+    ledger = state["ledger"]
+    if ledger:
+        # Early-Exit Heuristic: if 100% of CENTRAL slots are filled with entailment confidence >= 0.80,
+        # route immediately to node_synthesis, bypassing redundant exploration of peripheral slots.
+        central_slots = [
+            s for s in ledger.slots.values()
+            if s.criticality == SlotCriticality.CENTRAL or str(s.criticality).endswith("CENTRAL")
+        ]
+        if central_slots:
+            def _is_high_conf(s: Slot) -> bool:
+                if s.state not in (SlotState.RESOLVED, SlotState.SUPPORTED):
+                    return False
+                claims = [ledger.claims[cid] for cid in s.claim_ids if cid in ledger.claims]
+                return any(c.entailment_flag == "PASS" and c.confidence >= 0.80 for c in claims)
+
+            if all(_is_high_conf(s) for s in central_slots):
+                logger.info(
+                    f"Early-Exit Heuristic triggered at step {state['step_count']}: "
+                    f"100% of CENTRAL slots satisfied with confidence >= 0.80. Routing to synthesis."
+                )
+                elapsed = time.time() - state["wall_time_start"]
+                _log_stop_reason(state["question_id"], "central_slots_high_confidence_early_exit",
+                                 state["step_count"], state["tokens_used"], elapsed)
+                return {**state, "stop_reason": "central_slots_high_confidence_early_exit", "_trigger_revision": False}
+
+    # Check for stall (K=3 consecutive no-progress steps)
     K = state["thresholds"].get("stall_trigger_k", 3)
     revision_limit = state["thresholds"].get("decomposition_revision_limit", 1)
 
@@ -345,13 +407,11 @@ def node_coverage_check(state: AgentState) -> AgentState:
         }
 
     # Mark CONTESTED slots with no remaining actions as UNRESOLVABLE
-    ledger = state["ledger"]
     if ledger:
         for slot in ledger.slots.values():
             if slot.state == SlotState.CONTESTED:
-                # If budget is running low and no candidate can help, mark unresolvable
                 remaining_budget = (
-                    state["thresholds"].get("MAX_STEPS", 8) - state["step_count"]
+                    min(state["thresholds"].get("MAX_STEPS", 8), 4) - state["step_count"]
                 )
                 if remaining_budget <= 1:
                     ledger.mark_unresolvable(slot.slot_id)
@@ -386,7 +446,7 @@ def node_synthesize(state: AgentState) -> AgentState:
 
     # Step 4: Completeness Gate
     final_answer, exit_type = completeness_gate(
-        validated_answer, question, exit_type, question_id
+        validated_answer, question, exit_type, question_id, ledger=ledger
     )
 
     # Compute strategy_changed per spec §11.8

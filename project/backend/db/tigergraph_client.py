@@ -167,6 +167,60 @@ class TigerGraphClient:
             return result[0]
         return {}
 
+    def get_events_by_criteria(self, games: str = "", sport: str = "",
+                               min_competitors: int = 0) -> list[dict]:
+        """
+        Parameterized GSQL query get_events_by_criteria.
+        Filters by min_competitors (strictly greater if question specifies 'more than')
+        and returns structured event metadata directly.
+        """
+        import re
+        try:
+            results = self.run_query("get_events_by_criteria", {
+                "games": games,
+                "sport": sport,
+                "min_competitors": min_competitors,
+            })
+            if not results or "events" not in results[0]:
+                return []
+            raw_events = results[0]["events"]
+            if not raw_events:
+                return []
+
+            conn = self._get_conn()
+            doc_ids = [e if isinstance(e, str) else e.get("v_id", "") for e in raw_events]
+            doc_vertices = conn.getVerticesById("Document", doc_ids)
+
+            filtered = []
+            for d in doc_vertices:
+                attrs = d.get("attributes", {})
+                text = attrs.get("text", "")
+                m_comp = re.search(r'competitors\s*:\s*(\d+)', text, re.I)
+                comp = int(m_comp.group(1)) if m_comp else None
+
+                if min_competitors > 0 and (comp is None or comp <= min_competitors):
+                    continue
+
+                m_gold = re.search(r'gold\s*:\s*([^\n]+)', text, re.I)
+                m_event = re.search(r'event\s*:\s*([^\n]+)', text, re.I)
+                m_venue = re.search(r'venue\s*:\s*([^\n]+)', text, re.I)
+                m_date = re.search(r'date\s*:\s*([^\n]+)', text, re.I)
+
+                filtered.append({
+                    "doc_id": d.get("v_id", ""),
+                    "title": attrs.get("title", ""),
+                    "text": text,
+                    "competitors": comp,
+                    "event": m_event.group(1).strip() if m_event else "",
+                    "gold": m_gold.group(1).strip() if m_gold else "",
+                    "venue": m_venue.group(1).strip() if m_venue else "",
+                    "date": m_date.group(1).strip() if m_date else "",
+                })
+            return filtered
+        except Exception as e:
+            logger.error(f"get_events_by_criteria failed: {e}")
+            return []
+
     # ─── Direct vertex fetch ──────────────────────────────────────────
 
     def get_vertex(self, vertex_type: str, vertex_id: str) -> Optional[dict]:

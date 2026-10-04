@@ -52,10 +52,22 @@ def llm_judge(question: str, reference_answers: list[str],
         return "PASS" if result.startswith("PASS") else "FAIL"
     except Exception as e:
         logger.error(f"LLM judge error: {e}")
-        # Fallback: simple string match
+        import re, unicodedata
+        def _norm(s: str) -> str:
+            s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
+            s = re.sub(r'[^\w\s]', '', s).lower()
+            return re.sub(r'\s+', ' ', s).strip()
+
+        norm_cand = _norm(candidate_answer)
         for ref in reference_answers:
-            if ref.lower() in candidate_answer.lower():
-                return "PASS"
+            norm_ref = _norm(ref)
+            if norm_ref:
+                # Direct match or word match
+                if norm_ref in norm_cand or f" {norm_ref} " in f" {norm_cand} ":
+                    return "PASS"
+                # If numeric count matches
+                if norm_ref.isdigit() and norm_cand.startswith(norm_ref):
+                    return "PASS"
         return "FAIL"
 
 

@@ -1,16 +1,12 @@
-"""
-BENCHMARK mode runner — runs all 100 public questions × 3 pipelines.
-Per spec §1.3 and §9.1: all three run independently, no shared state.
-"""
-
+import asyncio
 import json
 import logging
 import os
 import time
 from pathlib import Path
 from datetime import datetime, timezone
-
 from typing import Optional
+
 from dotenv import load_dotenv
 from backend.config.unified_config import config
 
@@ -20,58 +16,49 @@ LOG_DIR = Path(config.paths.log_dir)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def run_benchmark(questions_path: str, output_path: Optional[str] = None,
-                  limit: int = None, model_config: dict = None) -> list[dict]:
-    """
-    Run BENCHMARK mode on the 100 public questions.
-    Per spec §9.1: 100 × 3 = 300 pipeline executions, sequentially.
-
-    Args:
-        questions_path: Path to eval_public.jsonl
-        output_path: Where to write benchmark_results.jsonl
-        limit: Optional limit for testing (None = all 100)
-        model_config: Must match across all 3 pipelines (§12.3)
-
-    Returns:
-        List of benchmark result records
-    """
-    output_path = output_path or str(LOG_DIR / "benchmark_results.jsonl")
+async def _process_question(
+    q_data: dict,
+    semaphore: asyncio.Semaphore,
+    write_lock: asyncio.Lock,
+    loop: asyncio.AbstractEventLoop,
+    output_path: str,
+    new_results: list,
+    progress_counter: list,
+    total_count: int,
+):
     from backend.pipelines import rag_pipeline, graphrag_pipeline, agentic_pipeline
-    from backend.evaluation.evaluator import llm_judge, bertscore_f1, validate_baseline_fairness
+    from backend.evaluation.evaluator import llm_judge, bertscore_f1
 
-    # Validate baseline fairness before running
-    if model_config:
-        validate_baseline_fairness(model_config, model_config, model_config)
+    question_id = q_data["qid"]
+    question = q_data["question"]
+    gold_answers = q_data.get("answer", [])
+    reference = gold_answers[0] if gold_answers else ""
 
-    # Load questions
-    questions = []
-    with open(questions_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                questions.append(json.loads(line))
+    async with semaphore:
+        record = {
+            "question_id": question_id,
+            "question": question,
+            "qtype": q_data.get("qtype", "unknown")
+        }
 
-    if limit:
-        questions = questions[:limit]
+        # ── Pipeline A (RAG) & Pipeline B (GraphRAG) concurrently ────────
+        rag_task = loop.run_in_executor(None, rag_pipeline.run, question, question_id)
+        grag_task = loop.run_in_executor(None, graphrag_pipeline.run, question, question_id)
+        rag_result, grag_result = await asyncio.gather(rag_task, grag_task)
 
-    logger.info(f"Running BENCHMARK on {len(questions)} questions × 3 pipelines")
-    results = []
+        # ── Pipeline C (Agentic) ─────────────────────────────────────────
+        ag_result = await loop.run_in_executor(None, agentic_pipeline.run, question, question_id)
 
-    for i, q_data in enumerate(questions):
-        question_id = q_data["qid"]
-        question = q_data["question"]
-        gold_answers = q_data.get("answer", [])
-        reference = gold_answers[0] if gold_answers else ""
+        # ── LLM Judge & Metric evaluations concurrently ─────────────────
+        judge_rag_task = loop.run_in_executor(None, llm_judge, question, gold_answers, rag_result["answer"])
+        judge_grag_task = loop.run_in_executor(None, llm_judge, question, gold_answers, grag_result["answer"])
+        judge_ag_task = loop.run_in_executor(None, llm_judge, question, gold_answers, ag_result["answer"])
+        rag_acc, grag_acc, ag_acc = await asyncio.gather(judge_rag_task, judge_grag_task, judge_ag_task)
 
-        logger.info(f"[{i+1}/{len(questions)}] Processing {question_id}: {question[:60]}...")
-
-        record = {"question_id": question_id, "question": question,
-                  "qtype": q_data.get("qtype", "unknown")}
-
-        # ── Pipeline A: RAG ─────────────────────────────────────────
-        logger.debug(f"  Running RAG pipeline...")
-        rag_result = rag_pipeline.run(question, question_id)
-        rag_acc = llm_judge(question, gold_answers, rag_result["answer"])
         rag_bs = bertscore_f1(rag_result["answer"], reference) if reference else 0.0
+        grag_bs = bertscore_f1(grag_result["answer"], reference) if reference else 0.0
+        ag_bs = bertscore_f1(ag_result["answer"], reference) if reference else 0.0
+
         record["rag"] = {
             "answer": rag_result["answer"],
             "sources": rag_result["sources"],
@@ -80,12 +67,6 @@ def run_benchmark(questions_path: str, output_path: Optional[str] = None,
             "accuracy_score": rag_acc,
             "bertscore_f1": round(rag_bs, 4),
         }
-
-        # ── Pipeline B: GraphRAG ─────────────────────────────────────
-        logger.debug(f"  Running GraphRAG pipeline...")
-        grag_result = graphrag_pipeline.run(question, question_id)
-        grag_acc = llm_judge(question, gold_answers, grag_result["answer"])
-        grag_bs = bertscore_f1(grag_result["answer"], reference) if reference else 0.0
         record["graphrag"] = {
             "answer": grag_result["answer"],
             "sources": grag_result["sources"],
@@ -94,12 +75,6 @@ def run_benchmark(questions_path: str, output_path: Optional[str] = None,
             "accuracy_score": grag_acc,
             "bertscore_f1": round(grag_bs, 4),
         }
-
-        # ── Pipeline C: Agentic ──────────────────────────────────────
-        logger.debug(f"  Running Agentic pipeline...")
-        ag_result = agentic_pipeline.run(question, question_id)
-        ag_acc = llm_judge(question, gold_answers, ag_result["answer"])
-        ag_bs = bertscore_f1(ag_result["answer"], reference) if reference else 0.0
         record["agentic"] = {
             "answer": ag_result["answer"],
             "exit_type": ag_result.get("exit_type", "ABSTAIN"),
@@ -113,16 +88,138 @@ def run_benchmark(questions_path: str, output_path: Optional[str] = None,
             "strategy_changed": ag_result.get("strategy_changed", False),
         }
 
-        results.append(record)
+        # Thread-safe append to output file
+        async with write_lock:
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+            new_results.append(record)
+            progress_counter[0] += 1
+            idx = progress_counter[0]
 
-        # Write incrementally (fail-safe)
-        with open(output_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+        logger.info(
+            f"[{idx}/{total_count}] Done {question_id} | "
+            f"RAG: {rag_acc} | GraphRAG: {grag_acc} | Agentic: {ag_acc}"
+        )
 
-        logger.info(f"  RAG: {rag_acc} | GraphRAG: {grag_acc} | Agentic: {ag_acc}")
-        time.sleep(1.0)
 
-    logger.info(f"BENCHMARK complete. Results written to {output_path}")
+async def _async_run_benchmark(
+    questions_to_process: list[dict],
+    output_path: str,
+    existing_records: list[dict],
+    total_count: int,
+) -> list[dict]:
+    loop = asyncio.get_running_loop()
+    semaphore = asyncio.Semaphore(5)
+    write_lock = asyncio.Lock()
+    new_results = []
+    progress_counter = [len(existing_records)]
+
+    tasks = [
+        _process_question(
+            q_data=q,
+            semaphore=semaphore,
+            write_lock=write_lock,
+            loop=loop,
+            output_path=output_path,
+            new_results=new_results,
+            progress_counter=progress_counter,
+            total_count=total_count,
+        )
+        for q in questions_to_process
+    ]
+
+    if tasks:
+        await asyncio.gather(*tasks)
+
+    return existing_records + new_results
+
+
+def run_benchmark(questions_path: str, output_path: Optional[str] = None,
+                  limit: int = None, model_config: dict = None) -> list[dict]:
+    """
+    Run BENCHMARK mode on evaluation questions with async parallelism,
+    multi-key rotator, RAM vector pre-indexing, and automatic resumption.
+    """
+    output_path = output_path or str(LOG_DIR / "benchmark_results.jsonl")
+    from backend.evaluation.evaluator import validate_baseline_fairness
+    from backend.db.vector_index import get_vector_index
+
+    if model_config:
+        validate_baseline_fairness(model_config, model_config, model_config)
+
+    # 1. Load all questions
+    all_questions = []
+    with open(questions_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                all_questions.append(json.loads(line))
+
+    if limit:
+        all_questions = all_questions[:limit]
+
+    total_target = len(all_questions)
+
+    # 2. Check for previously evaluated questions to auto-resume
+    existing_records = []
+    existing_qids = set()
+    if Path(output_path).exists():
+        with open(output_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        rec = json.loads(line)
+                        existing_records.append(rec)
+                        if "question_id" in rec:
+                            existing_qids.add(rec["question_id"])
+                    except Exception:
+                        pass
+
+    questions_to_process = [q for q in all_questions if q.get("qid") not in existing_qids]
+    logger.info(
+        f"Benchmark status: {len(existing_qids)}/{total_target} questions already completed. "
+        f"Processing remaining {len(questions_to_process)} questions..."
+    )
+
+    if not questions_to_process:
+        logger.info(f"All {total_target} benchmark questions are already evaluated in {output_path}")
+        _print_summary(existing_records)
+        return existing_records
+
+    # 3. Pre-load chunk index and pre-compute query embeddings in batch
+    try:
+        v_index = get_vector_index()
+        v_index.preload_cache()
+        q_texts = [q["question"] for q in questions_to_process]
+        logger.info(f"Pre-computing embeddings in batch for {len(q_texts)} questions...")
+        v_index.embed_batch(q_texts, task_type="RETRIEVAL_QUERY")
+        logger.info("Batch embedding precomputation complete.")
+    except Exception as e:
+        logger.warning(f"Batch embedding precomputation encountered notice: {e}")
+
+    # 4. Execute async parallel benchmark runner
+    try:
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                results = pool.submit(
+                    asyncio.run,
+                    _async_run_benchmark(questions_to_process, output_path, existing_records, total_target)
+                ).result()
+        else:
+            results = loop.run_until_complete(
+                _async_run_benchmark(questions_to_process, output_path, existing_records, total_target)
+            )
+    except Exception as e:
+        logger.error(f"Benchmark run error: {e}")
+        raise
+
+    logger.info(f"BENCHMARK complete. Total evaluated records: {len(results)}. Results at: {output_path}")
     _print_summary(results)
     return results
 
@@ -160,14 +257,14 @@ def build_confusion_matrix(benchmark_results: list[dict],
 
 
 def _print_summary(results: list[dict]) -> None:
-    rag_pass = sum(1 for r in results if r["rag"]["accuracy_score"] == "PASS")
-    grag_pass = sum(1 for r in results if r["graphrag"]["accuracy_score"] == "PASS")
-    ag_pass = sum(1 for r in results if r["agentic"]["accuracy_score"] == "PASS")
+    rag_pass = sum(1 for r in results if r.get("rag", {}).get("accuracy_score") == "PASS")
+    grag_pass = sum(1 for r in results if r.get("graphrag", {}).get("accuracy_score") == "PASS")
+    ag_pass = sum(1 for r in results if r.get("agentic", {}).get("accuracy_score") == "PASS")
     n = len(results)
 
-    avg_rag_tok = sum(r["rag"]["tokens_used"] for r in results) / max(n, 1)
-    avg_grag_tok = sum(r["graphrag"]["tokens_used"] for r in results) / max(n, 1)
-    avg_ag_tok = sum(r["agentic"]["tokens_used"] for r in results) / max(n, 1)
+    avg_rag_tok = sum(r.get("rag", {}).get("tokens_used", 0) for r in results) / max(n, 1)
+    avg_grag_tok = sum(r.get("graphrag", {}).get("tokens_used", 0) for r in results) / max(n, 1)
+    avg_ag_tok = sum(r.get("agentic", {}).get("tokens_used", 0) for r in results) / max(n, 1)
 
     print(f"\n{'='*60}")
     print(f"BENCHMARK SUMMARY ({n} questions)")

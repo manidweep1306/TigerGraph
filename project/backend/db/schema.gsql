@@ -330,3 +330,21 @@ CREATE OR REPLACE QUERY vector_search_chunks(
     PRINT scored_chunks AS chunks;
 }
 
+// Query 12: Parameterized event query by games, sport, and min_competitors
+CREATE OR REPLACE QUERY get_events_by_criteria(
+    STRING games,
+    STRING sport,
+    INT min_competitors
+) FOR GRAPH OlympicGraphRAG {
+    ListAccum<VERTEX<Document>> @@events;
+
+    all_docs = {Document.*};
+
+    docs = SELECT d FROM all_docs:d
+           WHERE (games == "" OR d.title LIKE "%" + games + "%" OR d.text LIKE "%" + games + "%")
+             AND (sport == "" OR d.title LIKE "%" + sport + "%" OR d.text LIKE "%" + sport + "%")
+           POST-ACCUM @@events += d;
+
+    PRINT @@events AS events;
+}
+

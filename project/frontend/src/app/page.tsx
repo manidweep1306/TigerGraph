@@ -41,13 +41,19 @@ export default function DashboardPage() {
     if (!silent) setLoading(true);
     try {
       const [results, summary] = await Promise.all([
-        api.getBenchmarkResults(),
-        api.getSummaryStats(),
+        api.getBenchmarkResults().catch((err) => {
+          console.warn("Could not fetch benchmark results:", err.message);
+          return [];
+        }),
+        api.getSummaryStats().catch((err) => {
+          console.warn("Could not fetch summary stats:", err.message);
+          return null;
+        }),
       ]);
       setBenchmarkData(Array.isArray(results) ? results : []);
       setStats(summary && summary.total_questions ? summary : null);
     } catch (e) {
-      console.error("Failed to load dashboard data:", e);
+      console.warn("Failed to load dashboard data:", e);
     } finally {
       if (!silent) setLoading(false);
     }

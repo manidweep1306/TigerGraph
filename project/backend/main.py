@@ -9,8 +9,10 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+import asyncio
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -137,6 +139,75 @@ async def query_all_pipelines(req: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"question": question, "question_id": qid, "results": result}
+
+
+@app.post("/query/stream")
+@app.get("/query/stream")
+async def query_stream(req: Optional[QueryRequest] = None, question: Optional[str] = None, pipeline: Optional[str] = "all"):
+    """
+    Server-Sent Events (SSE) streaming endpoint for live dashboard responsiveness.
+    Yields incremental pipeline progress and synthesized answers.
+    """
+    q_text = (req.question if req else question) or ""
+    qid = (req.question_id if req else None) or f"live_{hash(q_text) % 100000}"
+    pipe_mode = (req.pipeline if req else pipeline) or "all"
+
+    if not q_text.strip():
+        raise HTTPException(status_code=400, detail="question cannot be empty")
+
+    async def sse_generator():
+        yield f"data: {json.dumps({'event': 'start', 'question_id': qid, 'question': q_text})}\n\n"
+        await asyncio.sleep(0.01)
+
+        loop = asyncio.get_running_loop()
+
+        # 1. Pipeline A: RAG
+        if pipe_mode in ("rag", "all"):
+            yield f"data: {json.dumps({'event': 'pipeline_start', 'pipeline': 'rag'})}\n\n"
+            from backend.pipelines.rag_pipeline import run as rag_run
+            rag_out = await loop.run_in_executor(None, rag_run, q_text, qid)
+            yield f"data: {json.dumps({'event': 'pipeline_complete', 'pipeline': 'rag', 'result': rag_out})}\n\n"
+            await asyncio.sleep(0.01)
+
+        # 2. Pipeline B: GraphRAG
+        if pipe_mode in ("graphrag", "all"):
+            yield f"data: {json.dumps({'event': 'pipeline_start', 'pipeline': 'graphrag'})}\n\n"
+            from backend.pipelines.graphrag_pipeline import run as grag_run
+            grag_out = await loop.run_in_executor(None, grag_run, q_text, qid)
+            yield f"data: {json.dumps({'event': 'pipeline_complete', 'pipeline': 'graphrag', 'result': grag_out})}\n\n"
+            await asyncio.sleep(0.01)
+
+        # 3. Pipeline C: Agentic GraphRAG
+        if pipe_mode in ("agentic", "all"):
+            yield f"data: {json.dumps({'event': 'pipeline_start', 'pipeline': 'agentic'})}\n\n"
+            from backend.pipelines.agentic_pipeline import run as ag_run
+            ag_out = await loop.run_in_executor(None, ag_run, q_text, qid)
+            serializable_ag = {
+                "answer": ag_out.get("answer", ""),
+                "exit_type": ag_out.get("exit_type"),
+                "sources": ag_out.get("sources", []),
+                "tokens_used": ag_out.get("tokens_used", 0),
+                "latency_ms": ag_out.get("latency_ms", 0),
+                "trace": ag_out.get("trace", []),
+                "stop_reason": ag_out.get("stop_reason"),
+                "strategy_changed": ag_out.get("strategy_changed", False),
+                "n_chunks_retrieved": ag_out.get("n_chunks_retrieved", 0),
+                "n_sources_cited": ag_out.get("n_sources_cited", 0),
+            }
+            yield f"data: {json.dumps({'event': 'pipeline_complete', 'pipeline': 'agentic', 'result': serializable_ag})}\n\n"
+            await asyncio.sleep(0.01)
+
+        yield f"data: {json.dumps({'event': 'done', 'question_id': qid})}\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )
 
 
 @app.post("/adaptive")

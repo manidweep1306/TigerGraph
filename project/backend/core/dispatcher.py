@@ -57,6 +57,27 @@ def invoke(action_type: str, input_data: dict,
     return result
 
 
+def invoke_concurrent(actions: list[tuple[str, dict]],
+                      question_id: str, step_id: int) -> list[dict]:
+    """
+    Execute multiple non-conflicting agent actions concurrently.
+    Per Task 1: speculative dispatch for top candidate actions.
+    """
+    if not actions:
+        return []
+    if len(actions) == 1:
+        act_type, inp = actions[0]
+        return [invoke(act_type, inp, question_id, step_id)]
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(actions)) as executor:
+        futures = [
+            executor.submit(invoke, act_type, inp, question_id, step_id)
+            for act_type, inp in actions
+        ]
+        return [f.result() for f in futures]
+
+
 def build_agent_input(action_type: str, slot, ledger,
                        question: str, agent_config: dict) -> dict:
     """
@@ -111,6 +132,8 @@ def build_agent_input(action_type: str, slot, ledger,
             "source_claims": source_claim_ids,
             "source_claims_text": source_claims_text,
             "aggregation_type": "count" if "how many" in question.lower() else "compare",
+            "question": question,
+            "slot_description": slot.description if slot else "",
         }
 
     return {"query_string": question}

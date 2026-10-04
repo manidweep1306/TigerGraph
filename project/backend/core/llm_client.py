@@ -13,6 +13,7 @@ import os
 import re
 import time
 import random
+import threading
 from typing import Any, Optional, Union
 from dataclasses import dataclass
 
@@ -30,10 +31,111 @@ class LLMResponse:
     latency_ms: int = 0
 
 
+class GroqKeyEntry:
+    """Represents a single Groq API key with individual cooldown tracking."""
+    def __init__(self, api_key: str):
+        self.api_key = api_key.strip()
+        self._client = None
+        self.cooldown_until: float = 0.0
+
+    @property
+    def client(self):
+        if self._client is None:
+            try:
+                from groq import Groq
+                if self.api_key and not self.api_key.startswith("your_"):
+                    self._client = Groq(api_key=self.api_key)
+                else:
+                    self._client = None
+            except ImportError:
+                self._client = None
+        return self._client
+
+    def is_available(self, now: float) -> bool:
+        return now >= self.cooldown_until
+
+    def set_cooldown(self, seconds: float):
+        self.cooldown_until = time.time() + seconds
+
+    def create_completion(self, **call_kwargs):
+        """Invoke completion via Groq SDK or standard library HTTP fallback."""
+        if self.client is not None:
+            return self.client.chat.completions.create(**call_kwargs)
+
+        import urllib.request
+        import urllib.error
+        payload = json.dumps(call_kwargs).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+                class _MockChoice:
+                    def __init__(self, c):
+                        self.message = type("Msg", (), {"content": c.get("message", {}).get("content", "")})()
+                class _MockUsage:
+                    def __init__(self, u):
+                        self.total_tokens = u.get("total_tokens", 0)
+                class _MockResp:
+                    def __init__(self, d):
+                        self.choices = [_MockChoice(c) for c in d.get("choices", [])]
+                        self.usage = _MockUsage(d.get("usage", {}))
+                return _MockResp(data)
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RuntimeError(f"Groq HTTP {e.code}: {err_body or e.reason}")
+
+
+class GroqRotator:
+    """Thread-safe round-robin rotator for Groq API keys with 429 cooldown."""
+    def __init__(self, api_keys: list[str]):
+        clean_keys = [k.strip() for k in api_keys if k.strip() and not k.strip().startswith("your_")]
+        if not clean_keys:
+            clean_keys = [""]
+        self.entries = [GroqKeyEntry(k) for k in clean_keys]
+        self._index = 0
+        self._lock = threading.Lock()
+
+    def get_client_for_call(self) -> tuple[Optional[Any], GroqKeyEntry, float]:
+        """
+        Returns (client, entry, wait_seconds).
+        wait_seconds > 0 only if ALL keys are currently in cooldown.
+        """
+        with self._lock:
+            now = time.time()
+            n = len(self.entries)
+            # Find next ready key
+            for i in range(n):
+                candidate_idx = (self._index + i) % n
+                entry = self.entries[candidate_idx]
+                if entry.is_available(now):
+                    self._index = (candidate_idx + 1) % n
+                    return entry.client, entry, 0.0
+
+            # All keys are in cooldown; find the earliest available
+            earliest = min(self.entries, key=lambda e: e.cooldown_until)
+            wait_time = max(0.1, earliest.cooldown_until - now)
+            self._index = (self.entries.index(earliest) + 1) % n
+            return earliest.client, earliest, wait_time
+
+
 class GroqClient:
     """
-    Robust Groq API client with exponential backoff, rate-limit resilience,
-    and role-based model dispatching.
+    Robust Groq API client with thread-safe multi-key rotation, 429 backoff,
+    exponential retry, and token-optimized agent dispatches.
     """
 
     def __init__(
@@ -42,18 +144,19 @@ class GroqClient:
         fast_model: Optional[str] = None,
         complex_model: Optional[str] = None,
     ):
-        self.api_key = api_key or config.groq.api_key
-        self.fast_model = fast_model or config.groq.fast_model
-        self.complex_model = complex_model or config.groq.complex_model
-        self._client = None
+        raw_keys = (
+            os.environ.get("GROQ_API_KEYS", "")
+            or os.environ.get("GROQ_API_KEY", "")
+            or config.groq.api_key
+        )
+        keys_list = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        if api_key and api_key not in keys_list:
+            keys_list.insert(0, api_key)
 
-    def _get_client(self):
-        if self._client is None:
-            from groq import Groq
-            if not self.api_key:
-                logger.warning("GROQ_API_KEY is not set. Groq API calls will fail if not authenticated.")
-            self._client = Groq(api_key=self.api_key)
-        return self._client
+        self.rotator = GroqRotator(keys_list)
+        # Default fast model to llama-3.1-8b-instant per prompt specifications
+        self.fast_model = fast_model or os.environ.get("GROQ_FAST_MODEL") or "llama-3.1-8b-instant"
+        self.complex_model = complex_model or config.groq.complex_model
 
     def chat_completion(
         self,
@@ -68,18 +171,32 @@ class GroqClient:
         **kwargs
     ) -> LLMResponse:
         """
-        Execute Groq chat completion with rate-limiting and transient error retry logic.
+        Execute Groq chat completion with multi-key rotation and rate-limit cooldown.
         """
-        client = self._get_client()
         target_model = model or self.complex_model
-        delay = initial_delay
         t_start = time.time()
+        delay = initial_delay
+
+        normalized_messages = [dict(m) for m in messages]
+        if response_format and response_format.get("type") == "json_object":
+            has_json = any("json" in m.get("content", "").lower() for m in normalized_messages)
+            if not has_json and normalized_messages:
+                normalized_messages[-1]["content"] = normalized_messages[-1]["content"] + "\nRespond in valid JSON format."
 
         for attempt in range(1, max_retries + 1):
+            client, entry, wait_time = self.rotator.get_client_for_call()
+
+            if wait_time > 0:
+                logger.info(f"All Groq API keys cooling down. Waiting {wait_time:.1f}s...")
+                time.sleep(wait_time)
+
+            if not entry.api_key:
+                logger.warning("GROQ_API_KEY is not set. Groq API calls will fail if not authenticated.")
+
             try:
                 call_kwargs: dict[str, Any] = {
                     "model": target_model,
-                    "messages": messages,
+                    "messages": normalized_messages,
                     "temperature": temperature,
                     **kwargs
                 }
@@ -88,7 +205,7 @@ class GroqClient:
                 if max_tokens is not None:
                     call_kwargs["max_tokens"] = max_tokens
 
-                response = client.chat.completions.create(**call_kwargs)
+                response = entry.create_completion(**call_kwargs)
                 latency_ms = int((time.time() - t_start) * 1000)
 
                 content = response.choices[0].message.content or ""
@@ -96,7 +213,6 @@ class GroqClient:
                 if hasattr(response, "usage") and response.usage:
                     total_tokens = getattr(response.usage, "total_tokens", 0) or 0
                 if total_tokens <= 0:
-                    # Approximation: ~4 chars per token
                     msg_len = sum(len(m.get("content", "")) for m in messages)
                     total_tokens = max(1, (msg_len + len(content)) // 4)
 
@@ -123,35 +239,59 @@ class GroqClient:
                     or "service unavailable" in err_str.lower()
                     or "timeout" in err_str.lower()
                 )
-                is_retryable = is_rate_limit or is_server_error
 
+                if is_rate_limit:
+                    cooldown = random.uniform(5.0, 8.0)
+                    entry.set_cooldown(cooldown)
+                    key_hint = f"...{entry.api_key[-4:]}" if len(entry.api_key) > 4 else ""
+                    logger.warning(
+                        f"Groq key {key_hint} hit 429 rate limit. "
+                        f"Cooling down {cooldown:.1f}s and rotating to next key..."
+                    )
+                    # Check if another key is immediately ready
+                    with self.rotator._lock:
+                        now = time.time()
+                        ready = any(e.is_available(now) for e in self.rotator.entries)
+                    if ready:
+                        continue  # Immediate retry with next key!
+
+                is_retryable = is_rate_limit or is_server_error
                 if not is_retryable:
                     logger.error(f"Groq API non-retryable error on {target_model}: {e}")
                     raise
 
                 if attempt >= max_retries:
+                    if target_model != "openai/gpt-oss-20b":
+                        logger.warning(f"Falling back from {target_model} to openai/gpt-oss-20b due to limit/retry.")
+                        target_model = "openai/gpt-oss-20b"
+                        call_kwargs["model"] = "openai/gpt-oss-20b"
+                        try:
+                            client, entry, _ = self.rotator.get_client_for_call()
+                            response = entry.create_completion(**call_kwargs)
+                            content = response.choices[0].message.content or ""
+                            return LLMResponse(
+                                text=content.strip(),
+                                tokens_used=max(1, len(content) // 4),
+                                raw_response=response,
+                                model=target_model,
+                                latency_ms=int((time.time() - t_start) * 1000),
+                            )
+                        except Exception as e2:
+                            logger.error(f"Fallback to 20b also failed: {e2}")
                     logger.error(f"Groq API max retries reached on {target_model}: {e}")
                     raise
 
-                # Parse suggested retry delay if provided in error message
                 sleep_time = delay + random.uniform(0.1, 0.5)
-                match = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
-                if match:
-                    sleep_time = max(sleep_time, float(match.group(1)) + 0.5)
-                else:
-                    match_ms = re.search(r"try again in (\d+(?:\.\d+)?)ms", err_str, re.IGNORECASE)
-                    if match_ms:
-                        sleep_time = max(sleep_time, (float(match_ms.group(1)) / 1000.0) + 0.5)
-
                 logger.warning(
-                    f"[Attempt {attempt}/{max_retries}] Groq API transient error on {target_model}: "
-                    f"({err_str[:120]}...). Sleeping {sleep_time:.2f}s before retry..."
+                    f"[Attempt {attempt}/{max_retries}] Groq API error on {target_model}: "
+                    f"({err_str[:120]}...). Sleeping {sleep_time:.2f}s..."
                 )
                 time.sleep(sleep_time)
                 delay *= backoff_factor
 
-        # Final attempt
-        response = client.chat.completions.create(
+        # Final fallback attempt
+        client, entry, _ = self.rotator.get_client_for_call()
+        response = entry.create_completion(
             model=target_model,
             messages=messages,
             temperature=temperature,
@@ -172,10 +312,11 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         json_mode: bool = False,
         temperature: float = 0.0,
+        max_tokens: int = 150,
         **kwargs
     ) -> LLMResponse:
         """
-        Fast intermediate agent call using llama-3.1-8b-instant.
+        Fast intermediate agent call using fast model (default max 150 tokens).
         Used for: EvidenceEvaluatorAgent, EntityLinkerAgent, AggregationAgent.
         """
         messages = []
@@ -189,6 +330,7 @@ class GroqClient:
             model=self.fast_model,
             temperature=temperature,
             response_format=response_format,
+            max_tokens=max_tokens,
             **kwargs
         )
 
@@ -198,10 +340,11 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         json_mode: bool = False,
         temperature: float = 0.0,
+        max_tokens: int = 350,
         **kwargs
     ) -> LLMResponse:
         """
-        Complex logic & synthesis call using llama-3.3-70b-versatile.
+        Complex logic & synthesis call using complex model (default max 350 tokens).
         Used for: Decomposer, Synthesis, Evaluator LLM Judge, Ladder Router, RAG / GraphRAG generation.
         """
         messages = []
@@ -215,6 +358,7 @@ class GroqClient:
             model=self.complex_model,
             temperature=temperature,
             response_format=response_format,
+            max_tokens=max_tokens,
             **kwargs
         )
 
@@ -224,22 +368,26 @@ class GroqClient:
         system_instruction: Optional[str] = None,
         model: Optional[str] = None,
         use_fast_model: bool = False,
+        max_tokens: Optional[int] = None,
         **kwargs
     ) -> tuple[dict[str, Any], LLMResponse]:
         """
         Execute call and return parsed JSON object with fallback code fence handling.
         """
         target_model = model or (self.fast_model if use_fast_model else self.complex_model)
+        if max_tokens is None:
+            max_tokens = 150 if use_fast_model else 350
+
         messages = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
         messages.append({"role": "user", "content": prompt})
 
-        # Request JSON object if supported
         res = self.chat_completion(
             messages=messages,
             model=target_model,
             response_format={"type": "json_object"},
+            max_tokens=max_tokens,
             **kwargs
         )
 
